@@ -1,31 +1,54 @@
-//! PVM instruction set (Appendix A.5 of the Gray Paper).
+//! PVM instruction set (Appendix A.5 of the Gray Paper v0.7.2).
 //!
-//! The PVM uses a RISC-V rv64em inspired ISA with variable-length instructions.
-//! Instructions are categorized by their argument types.
+//! Opcodes and instruction categories matching the specification exactly.
 
 /// PVM opcodes (ζᵢ values from Appendix A.5).
+///
+/// Organized by instruction category matching the spec sections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Opcode {
-    // A.5.1: Instructions with no arguments
+    // A.5.1: No arguments
     Trap = 0,
-    Fallthrough = 17,
+    Fallthrough = 1,
 
-    // A.5.2: Instructions with one immediate argument
-    Ecalli = 78,
+    // A.5.2: One immediate
+    Ecalli = 10,
 
-    // A.5.3: Instructions with arguments of one register and one immediate
-    JumpInd = 19,
-    LoadImm = 4,
-    LoadImmU64 = 52,
+    // A.5.3: One register + extended width immediate
+    LoadImm64 = 20,
 
-    // A.5.4: Instructions with one register and two immediates
-    StoreImmU8 = 62,
-    StoreImmU16 = 79,
-    StoreImmU32 = 69,
-    StoreImmU64 = 67,
+    // A.5.4: Two immediates
+    StoreImmU8 = 30,
+    StoreImmU16 = 31,
+    StoreImmU32 = 32,
+    StoreImmU64 = 33,
 
-    // A.5.7: Instructions with one immediate and one offset
+    // A.5.5: One offset
+    Jump = 40,
+
+    // A.5.6: One register + one immediate
+    JumpInd = 50,
+    LoadImm = 51,
+    LoadU8 = 52,
+    LoadI8 = 53,
+    LoadU16 = 54,
+    LoadI16 = 55,
+    LoadU32 = 56,
+    LoadI32 = 57,
+    LoadU64 = 58,
+    StoreU8 = 59,
+    StoreU16 = 60,
+    StoreU32 = 61,
+    StoreU64 = 62,
+
+    // A.5.7: One register + two immediates
+    StoreImmIndU8 = 70,
+    StoreImmIndU16 = 71,
+    StoreImmIndU32 = 72,
+    StoreImmIndU64 = 73,
+
+    // A.5.8: One register + one immediate + one offset
     LoadImmJump = 80,
     BranchEqImm = 81,
     BranchNeImm = 82,
@@ -38,7 +61,7 @@ pub enum Opcode {
     BranchGeSImm = 89,
     BranchGtSImm = 90,
 
-    // A.5.9: Two-register instructions
+    // A.5.9: Two registers
     MoveReg = 100,
     Sbrk = 101,
     CountSetBits64 = 102,
@@ -77,217 +100,234 @@ pub enum Opcode {
     NegAddImm32 = 141,
     SetGtUImm = 142,
     SetGtSImm = 143,
-    ShloLImm64 = 144,
-    ShloRImm64 = 145,
-    SharRImm64 = 146,
-    NegAddImm64 = 147,
-    MulImm64 = 148,
+    ShloLImmAlt32 = 144,
+    ShloRImmAlt32 = 145,
+    SharRImmAlt32 = 146,
+    CmovIzImm = 147,
+    CmovNzImm = 148,
     AddImm64 = 149,
+    MulImm64 = 150,
+    ShloLImm64 = 151,
+    ShloRImm64 = 152,
+    SharRImm64 = 153,
+    NegAddImm64 = 154,
+    ShloLImmAlt64 = 155,
+    ShloRImmAlt64 = 156,
+    SharRImmAlt64 = 157,
+    RotR64Imm = 158,
+    RotR64ImmAlt = 159,
+    RotR32Imm = 160,
+    RotR32ImmAlt = 161,
 
     // A.5.11: Two registers + one offset
-    BranchEq = 150,
-    BranchNe = 151,
-    BranchLtU = 152,
-    BranchLeU = 153,
-    BranchGeU = 154,
-    BranchGtU = 155,
-    BranchLtS = 156,
-    BranchLeS = 157,
-    BranchGeS = 158,
-    BranchGtS = 159,
+    BranchEq = 170,
+    BranchNe = 171,
+    BranchLtU = 172,
+    BranchLtS = 173,
+    BranchGeU = 174,
+    BranchGeS = 175,
 
-    // A.5.12: Three-register instructions
-    Add32 = 160,
-    Sub32 = 161,
-    And = 162,
-    Xor = 163,
-    Or = 164,
-    Mul32 = 165,
-    DivU32 = 166,
-    DivS32 = 167,
-    RemU32 = 168,
-    RemS32 = 169,
-    ShloL32 = 170,
-    ShloR32 = 171,
-    SharR32 = 172,
-    Add64 = 173,
-    Sub64 = 174,
-    Mul64 = 175,
-    DivU64 = 176,
-    DivS64 = 177,
-    RemU64 = 178,
-    RemS64 = 179,
-    ShloL64 = 180,
-    ShloR64 = 181,
-    SharR64 = 182,
-    SetLtU = 183,
-    SetLtS = 184,
-    CmovIz = 185,
-    CmovNz = 186,
+    // A.5.12: Two registers + two immediates
+    LoadImmJumpInd = 180,
 
-    // Three-register load/store
-    StoreIndRegU8 = 187,
-    StoreIndRegU16 = 188,
-    StoreIndRegU32 = 189,
-    StoreIndRegU64 = 190,
-    LoadIndRegU8 = 191,
-    LoadIndRegI8 = 192,
-    LoadIndRegU16 = 193,
-    LoadIndRegI16 = 194,
-    LoadIndRegU32 = 195,
-    LoadIndRegI32 = 196,
-    LoadIndRegU64 = 197,
+    // A.5.13: Three registers
+    Add32 = 190,
+    Sub32 = 191,
+    Mul32 = 192,
+    DivU32 = 193,
+    DivS32 = 194,
+    RemU32 = 195,
+    RemS32 = 196,
+    ShloL32 = 197,
+    ShloR32 = 198,
+    SharR32 = 199,
+    Add64 = 200,
+    Sub64 = 201,
+    Mul64 = 202,
+    DivU64 = 203,
+    DivS64 = 204,
+    RemU64 = 205,
+    RemS64 = 206,
+    ShloL64 = 207,
+    ShloR64 = 208,
+    SharR64 = 209,
+    And = 210,
+    Xor = 211,
+    Or = 212,
+    MulUpperSS = 213,
+    MulUpperUU = 214,
+    MulUpperSU = 215,
+    SetLtU = 216,
+    SetLtS = 217,
+    CmovIz = 218,
+    CmovNz = 219,
+    RotL64 = 220,
+    RotL32 = 221,
+    RotR64 = 222,
+    RotR32 = 223,
+    AndInv = 224,
+    OrInv = 225,
+    Xnor = 226,
+    Max = 227,
+    MaxU = 228,
+    Min = 229,
+    MinU = 230,
 }
 
+/// All valid opcode byte values.
+const VALID_OPCODES: &[u8] = &[
+    0, 1, 10, 20,
+    30, 31, 32, 33, 40,
+    50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
+    70, 71, 72, 73,
+    80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+    100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+    120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130,
+    131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141,
+    142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152,
+    153, 154, 155, 156, 157, 158, 159, 160, 161,
+    170, 171, 172, 173, 174, 175,
+    180,
+    190, 191, 192, 193, 194, 195, 196, 197, 198, 199,
+    200, 201, 202, 203, 204, 205, 206, 207, 208, 209,
+    210, 211, 212, 213, 214, 215, 216, 217, 218, 219,
+    220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230,
+];
+
 impl Opcode {
-    /// Try to decode an opcode from a byte.
+    /// Try to decode an opcode from a byte (eq A.19).
     pub fn from_byte(byte: u8) -> Option<Self> {
-        // Use a match to validate the opcode
-        match byte {
-            0 => Some(Self::Trap),
-            4 => Some(Self::LoadImm),
-            17 => Some(Self::Fallthrough),
-            19 => Some(Self::JumpInd),
-            52 => Some(Self::LoadImmU64),
-            62 => Some(Self::StoreImmU8),
-            67 => Some(Self::StoreImmU64),
-            69 => Some(Self::StoreImmU32),
-            78 => Some(Self::Ecalli),
-            79 => Some(Self::StoreImmU16),
-            80 => Some(Self::LoadImmJump),
-            81..=90 => {
-                // Branch instructions with immediate
-                Some(match byte {
-                    81 => Self::BranchEqImm,
-                    82 => Self::BranchNeImm,
-                    83 => Self::BranchLtUImm,
-                    84 => Self::BranchLeUImm,
-                    85 => Self::BranchGeUImm,
-                    86 => Self::BranchGtUImm,
-                    87 => Self::BranchLtSImm,
-                    88 => Self::BranchLeSImm,
-                    89 => Self::BranchGeSImm,
-                    90 => Self::BranchGtSImm,
-                    _ => unreachable!(),
-                })
-            }
-            100..=111 => {
-                Some(match byte {
-                    100 => Self::MoveReg,
-                    101 => Self::Sbrk,
-                    102 => Self::CountSetBits64,
-                    103 => Self::CountSetBits32,
-                    104 => Self::LeadingZeroBits64,
-                    105 => Self::LeadingZeroBits32,
-                    106 => Self::TrailingZeroBits64,
-                    107 => Self::TrailingZeroBits32,
-                    108 => Self::SignExtend8,
-                    109 => Self::SignExtend16,
-                    110 => Self::ZeroExtend16,
-                    111 => Self::ReverseBytes,
-                    _ => unreachable!(),
-                })
-            }
-            120..=149 => {
-                Some(match byte {
-                    120 => Self::StoreIndU8,
-                    121 => Self::StoreIndU16,
-                    122 => Self::StoreIndU32,
-                    123 => Self::StoreIndU64,
-                    124 => Self::LoadIndU8,
-                    125 => Self::LoadIndI8,
-                    126 => Self::LoadIndU16,
-                    127 => Self::LoadIndI16,
-                    128 => Self::LoadIndU32,
-                    129 => Self::LoadIndI32,
-                    130 => Self::LoadIndU64,
-                    131 => Self::AddImm32,
-                    132 => Self::AndImm,
-                    133 => Self::XorImm,
-                    134 => Self::OrImm,
-                    135 => Self::MulImm32,
-                    136 => Self::SetLtUImm,
-                    137 => Self::SetLtSImm,
-                    138 => Self::ShloLImm32,
-                    139 => Self::ShloRImm32,
-                    140 => Self::SharRImm32,
-                    141 => Self::NegAddImm32,
-                    142 => Self::SetGtUImm,
-                    143 => Self::SetGtSImm,
-                    144 => Self::ShloLImm64,
-                    145 => Self::ShloRImm64,
-                    146 => Self::SharRImm64,
-                    147 => Self::NegAddImm64,
-                    148 => Self::MulImm64,
-                    149 => Self::AddImm64,
-                    _ => unreachable!(),
-                })
-            }
-            150..=159 => {
-                Some(match byte {
-                    150 => Self::BranchEq,
-                    151 => Self::BranchNe,
-                    152 => Self::BranchLtU,
-                    153 => Self::BranchLeU,
-                    154 => Self::BranchGeU,
-                    155 => Self::BranchGtU,
-                    156 => Self::BranchLtS,
-                    157 => Self::BranchLeS,
-                    158 => Self::BranchGeS,
-                    159 => Self::BranchGtS,
-                    _ => unreachable!(),
-                })
-            }
-            160..=197 => {
-                Some(match byte {
-                    160 => Self::Add32,
-                    161 => Self::Sub32,
-                    162 => Self::And,
-                    163 => Self::Xor,
-                    164 => Self::Or,
-                    165 => Self::Mul32,
-                    166 => Self::DivU32,
-                    167 => Self::DivS32,
-                    168 => Self::RemU32,
-                    169 => Self::RemS32,
-                    170 => Self::ShloL32,
-                    171 => Self::ShloR32,
-                    172 => Self::SharR32,
-                    173 => Self::Add64,
-                    174 => Self::Sub64,
-                    175 => Self::Mul64,
-                    176 => Self::DivU64,
-                    177 => Self::DivS64,
-                    178 => Self::RemU64,
-                    179 => Self::RemS64,
-                    180 => Self::ShloL64,
-                    181 => Self::ShloR64,
-                    182 => Self::SharR64,
-                    183 => Self::SetLtU,
-                    184 => Self::SetLtS,
-                    185 => Self::CmovIz,
-                    186 => Self::CmovNz,
-                    187 => Self::StoreIndRegU8,
-                    188 => Self::StoreIndRegU16,
-                    189 => Self::StoreIndRegU32,
-                    190 => Self::StoreIndRegU64,
-                    191 => Self::LoadIndRegU8,
-                    192 => Self::LoadIndRegI8,
-                    193 => Self::LoadIndRegU16,
-                    194 => Self::LoadIndRegI16,
-                    195 => Self::LoadIndRegU32,
-                    196 => Self::LoadIndRegI32,
-                    197 => Self::LoadIndRegU64,
-                    _ => unreachable!(),
-                })
-            }
-            _ => None,
+        // Safety: all enum variants have explicit repr(u8) values
+        if VALID_OPCODES.contains(&byte) {
+            // SAFETY: we verified the byte is a valid opcode
+            Some(unsafe { std::mem::transmute(byte) })
+        } else {
+            None
         }
     }
 
-    /// Gas cost for this instruction (ϱΔ).
-    /// All standard instructions cost 1 gas unit.
-    pub fn gas_cost(&self) -> u64 {
+    /// Instruction category determining the argument format.
+    pub fn category(self) -> InstructionCategory {
+        let b = self as u8;
+        match b {
+            0 | 1 => InstructionCategory::NoArgs,
+            10 => InstructionCategory::OneImm,
+            20 => InstructionCategory::OneRegExtImm,
+            30..=33 => InstructionCategory::TwoImm,
+            40 => InstructionCategory::OneOffset,
+            50..=62 => InstructionCategory::OneRegOneImm,
+            70..=73 => InstructionCategory::OneRegTwoImm,
+            80..=90 => InstructionCategory::OneRegImmOffset,
+            100..=111 => InstructionCategory::TwoReg,
+            120..=161 => InstructionCategory::TwoRegOneImm,
+            170..=175 => InstructionCategory::TwoRegOneOffset,
+            180 => InstructionCategory::TwoRegTwoImm,
+            190..=230 => InstructionCategory::ThreeReg,
+            _ => InstructionCategory::NoArgs, // unreachable for valid opcodes
+        }
+    }
+
+    /// Gas cost for this instruction (ϱ∆). All instructions cost 1.
+    pub fn gas_cost(self) -> u64 {
         1
+    }
+
+    /// Whether this opcode is a basic-block termination instruction (set T).
+    pub fn is_terminator(self) -> bool {
+        matches!(
+            self,
+            Opcode::Trap
+                | Opcode::Fallthrough
+                | Opcode::Jump
+                | Opcode::JumpInd
+                | Opcode::LoadImmJump
+                | Opcode::LoadImmJumpInd
+                | Opcode::BranchEq
+                | Opcode::BranchNe
+                | Opcode::BranchLtU
+                | Opcode::BranchLtS
+                | Opcode::BranchGeU
+                | Opcode::BranchGeS
+                | Opcode::BranchEqImm
+                | Opcode::BranchNeImm
+                | Opcode::BranchLtUImm
+                | Opcode::BranchLtSImm
+                | Opcode::BranchLeUImm
+                | Opcode::BranchLeSImm
+                | Opcode::BranchGeUImm
+                | Opcode::BranchGeSImm
+                | Opcode::BranchGtUImm
+                | Opcode::BranchGtSImm
+        )
+    }
+}
+
+/// Instruction argument category (determines how operands are decoded).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstructionCategory {
+    /// A.5.1: No arguments (trap, fallthrough)
+    NoArgs,
+    /// A.5.2: One immediate (ecalli)
+    OneImm,
+    /// A.5.3: One register + extended width immediate (load_imm_64)
+    OneRegExtImm,
+    /// A.5.4: Two immediates (store_imm_*)
+    TwoImm,
+    /// A.5.5: One offset (jump)
+    OneOffset,
+    /// A.5.6: One register + one immediate
+    OneRegOneImm,
+    /// A.5.7: One register + two immediates
+    OneRegTwoImm,
+    /// A.5.8: One register + one immediate + one offset
+    OneRegImmOffset,
+    /// A.5.9: Two registers
+    TwoReg,
+    /// A.5.10: Two registers + one immediate
+    TwoRegOneImm,
+    /// A.5.11: Two registers + one offset
+    TwoRegOneOffset,
+    /// A.5.12: Two registers + two immediates
+    TwoRegTwoImm,
+    /// A.5.13: Three registers
+    ThreeReg,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_opcodes() {
+        assert_eq!(Opcode::from_byte(0), Some(Opcode::Trap));
+        assert_eq!(Opcode::from_byte(1), Some(Opcode::Fallthrough));
+        assert_eq!(Opcode::from_byte(10), Some(Opcode::Ecalli));
+        assert_eq!(Opcode::from_byte(40), Some(Opcode::Jump));
+        assert_eq!(Opcode::from_byte(200), Some(Opcode::Add64));
+        assert_eq!(Opcode::from_byte(230), Some(Opcode::MinU));
+    }
+
+    #[test]
+    fn test_invalid_opcodes() {
+        assert_eq!(Opcode::from_byte(2), None);
+        assert_eq!(Opcode::from_byte(15), None);
+        assert_eq!(Opcode::from_byte(255), None);
+    }
+
+    #[test]
+    fn test_categories() {
+        assert_eq!(Opcode::Trap.category(), InstructionCategory::NoArgs);
+        assert_eq!(Opcode::Ecalli.category(), InstructionCategory::OneImm);
+        assert_eq!(Opcode::LoadImm64.category(), InstructionCategory::OneRegExtImm);
+        assert_eq!(Opcode::StoreImmU8.category(), InstructionCategory::TwoImm);
+        assert_eq!(Opcode::Jump.category(), InstructionCategory::OneOffset);
+        assert_eq!(Opcode::LoadImm.category(), InstructionCategory::OneRegOneImm);
+        assert_eq!(Opcode::StoreImmIndU8.category(), InstructionCategory::OneRegTwoImm);
+        assert_eq!(Opcode::LoadImmJump.category(), InstructionCategory::OneRegImmOffset);
+        assert_eq!(Opcode::MoveReg.category(), InstructionCategory::TwoReg);
+        assert_eq!(Opcode::AddImm32.category(), InstructionCategory::TwoRegOneImm);
+        assert_eq!(Opcode::BranchEq.category(), InstructionCategory::TwoRegOneOffset);
+        assert_eq!(Opcode::LoadImmJumpInd.category(), InstructionCategory::TwoRegTwoImm);
+        assert_eq!(Opcode::Add64.category(), InstructionCategory::ThreeReg);
     }
 }

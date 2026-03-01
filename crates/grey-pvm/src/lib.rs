@@ -6,6 +6,7 @@
 //! - Gas metering for bounded execution
 //! - Host-call interface for system interactions
 
+pub mod args;
 pub mod instruction;
 pub mod memory;
 pub mod program;

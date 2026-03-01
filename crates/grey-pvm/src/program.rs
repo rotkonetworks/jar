@@ -1,49 +1,85 @@
-//! PVM program loading and standard initialization (Appendix A.7).
+//! PVM program loading and standard initialization (Appendix A).
 //!
-//! Standard program format: read-only data + read-write data + stack + arguments.
+//! Includes `deblob` for parsing program blobs (eq A.2) and
+//! standard program initialization Y(p, a) (eq A.37).
 
 use crate::memory::{Memory, PageAccess};
-use grey_types::constants::{PVM_PAGE_SIZE, PVM_ZONE_SIZE, PVM_INIT_INPUT_SIZE};
+use crate::vm::Pvm;
+use grey_types::constants::{PVM_INIT_INPUT_SIZE, PVM_PAGE_SIZE, PVM_ZONE_SIZE};
+use grey_types::Gas;
 
-/// Parsed PVM program (eq A.37-A.38).
-pub struct Program {
-    /// c: The instruction bytecode (including jump table).
-    pub code: Vec<u8>,
-    /// Read-only data segment.
-    pub ro_data: Vec<u8>,
-    /// Read-write (heap) data segment.
-    pub rw_data: Vec<u8>,
-    /// Initial heap zero-pages.
-    pub heap_pages: u32,
-    /// Stack size.
-    pub stack_size: u32,
+/// Parse a program blob into (code, bitmask, jump_table) (eq A.2).
+///
+/// deblob(p) = (c, k, j) where:
+///   p = E(|j|) ⌢ E₁(z) ⌢ E(|c|) ⌢ E_z(j) ⌢ E(c) ⌢ E(k), |k| = |c|
+pub fn deblob(blob: &[u8]) -> Option<(Vec<u8>, Vec<u8>, Vec<u32>)> {
+    let mut offset = 0;
+
+    // Read |j| (jump table length) as variable-length natural
+    let (jt_len, n) = decode_natural(blob, offset)?;
+    offset += n;
+
+    // Read z (encoding size for jump table entries) as 1 byte
+    if offset >= blob.len() {
+        return None;
+    }
+    let z = blob[offset] as usize;
+    offset += 1;
+
+    // Read |c| (code length) as variable-length natural
+    let (code_len, n) = decode_natural(blob, offset)?;
+    offset += n;
+
+    // Read jump table: jt_len entries, each z bytes LE
+    let mut jump_table = Vec::with_capacity(jt_len);
+    for _ in 0..jt_len {
+        if offset + z > blob.len() {
+            return None;
+        }
+        let mut val: u32 = 0;
+        for i in 0..z {
+            val |= (blob[offset + i] as u32) << (i * 8);
+        }
+        jump_table.push(val);
+        offset += z;
+    }
+
+    // Read code: code_len bytes
+    if offset + code_len > blob.len() {
+        return None;
+    }
+    let code = blob[offset..offset + code_len].to_vec();
+    offset += code_len;
+
+    // Read bitmask: code_len bytes (|k| = |c|)
+    if offset + code_len > blob.len() {
+        return None;
+    }
+    let bitmask = blob[offset..offset + code_len].to_vec();
+
+    // Validate: |k| = |c|
+    if bitmask.len() != code.len() {
+        return None;
+    }
+
+    Some((code, bitmask, jump_table))
 }
 
-/// Standard program initialization Y(p, a) (eq A.37).
+/// Standard program initialization Y(p, a) (eq A.37-A.43).
 ///
-/// Returns (code, registers, memory) or None if the program blob is invalid.
-pub fn initialize_program(
-    program_blob: &[u8],
-    arguments: &[u8],
-) -> Option<(Vec<u8>, [u64; 13], Memory)> {
-    // Parse the program header (eq A.38):
-    // E3(|o|) ⌢ E3(|w|) ⌢ E2(z) ⌢ E3(s) ⌢ o ⌢ w ⌢ E4(|c|) ⌢ c = p
+/// Returns a fully initialized PVM or None if the program blob is invalid.
+pub fn initialize_program(program_blob: &[u8], arguments: &[u8], gas: Gas) -> Option<Pvm> {
+    // Parse the standard program blob header (eq A.38):
+    // E₃(|o|) ⌢ E₃(|w|) ⌢ E₂(z) ⌢ E₃(s) ⌢ o ⌢ w ⌢ p
     if program_blob.len() < 11 {
         return None;
     }
 
     let mut offset = 0;
 
-    // Read |o| as 3-byte LE (read-only data size)
     let ro_size = read_le_u24(program_blob, &mut offset)? as u32;
-
-    // Read |w| as 3-byte LE (read-write data size)
     let rw_size = read_le_u24(program_blob, &mut offset)? as u32;
-
-    // Read z as 2-byte LE (additional heap pages)
     let heap_pages = read_le_u16(program_blob, &mut offset)? as u32;
-
-    // Read s as 3-byte LE (stack size)
     let stack_size = read_le_u24(program_blob, &mut offset)? as u32;
 
     // Read read-only data
@@ -60,35 +96,18 @@ pub fn initialize_program(
     let rw_data = &program_blob[offset..offset + rw_size as usize];
     offset += rw_size as usize;
 
-    // Read |c| as 4-byte LE (code size)
-    if offset + 4 > program_blob.len() {
-        return None;
-    }
-    let code_size = u32::from_le_bytes([
-        program_blob[offset],
-        program_blob[offset + 1],
-        program_blob[offset + 2],
-        program_blob[offset + 3],
-    ]);
-    offset += 4;
+    // Remaining bytes are the program blob for deblob
+    let program_data = &program_blob[offset..];
+    let (code, bitmask, jump_table) = deblob(program_data)?;
 
-    // Read code
-    if offset + code_size as usize > program_blob.len() {
-        return None;
-    }
-    let code = program_blob[offset..offset + code_size as usize].to_vec();
-
-    // ZZ = 2^16 (zone size)
     let zz = PVM_ZONE_SIZE;
     let zi = PVM_INIT_INPUT_SIZE;
 
-    // Helper: round up to next page boundary
     let page_round = |x: u32| -> u32 {
         let ps = PVM_PAGE_SIZE;
         ((x + ps - 1) / ps) * ps
     };
 
-    // Helper: round up to next zone boundary
     let zone_round = |x: u32| -> u32 { ((x + zz - 1) / zz) * zz };
 
     // Check total memory fits in 32-bit address space (eq A.41)
@@ -106,11 +125,18 @@ pub fn initialize_program(
 
     // Read-only data at ZZ
     let ro_base = zz;
-    map_region_with_data(&mut memory, ro_base, &ro_data, page_round(ro_size), PageAccess::ReadOnly);
+    map_region_with_data(&mut memory, ro_base, ro_data, page_round(ro_size), PageAccess::ReadOnly);
 
     // Read-write data at 2*ZZ + Z(|o|)
     let rw_base = 2 * zz + zone_round(ro_size);
-    map_region_with_data(&mut memory, rw_base, &rw_data, page_round(rw_size + heap_pages * PVM_PAGE_SIZE), PageAccess::ReadWrite);
+    let heap_base = rw_base;
+    map_region_with_data(
+        &mut memory,
+        rw_base,
+        rw_data,
+        page_round(rw_size + heap_pages * PVM_PAGE_SIZE),
+        PageAccess::ReadWrite,
+    );
 
     // Stack at (2^32 - 2*ZZ - ZI - P(s)) .. (2^32 - 2*ZZ - ZI)
     let stack_top = (1u64 << 32) - 2 * zz as u64 - zi as u64;
@@ -119,16 +145,65 @@ pub fn initialize_program(
 
     // Arguments at (2^32 - ZZ - ZI)
     let arg_base = (1u64 << 32) - zz as u64 - zi as u64;
-    map_region_with_data(&mut memory, arg_base as u32, arguments, page_round(arguments.len() as u32), PageAccess::ReadOnly);
+    map_region_with_data(
+        &mut memory,
+        arg_base as u32,
+        arguments,
+        page_round(arguments.len() as u32),
+        PageAccess::ReadOnly,
+    );
 
     // Initialize registers (eq A.43)
     let mut registers = [0u64; 13];
-    registers[0] = (1u64 << 32) - (1u64 << 16);                     // SP initial
-    registers[1] = (1u64 << 32) - 2 * zz as u64 - zi as u64;       // arg end
-    registers[7] = (1u64 << 32) - zz as u64 - zi as u64;            // arg base
-    registers[8] = arguments.len() as u64;                            // arg length
+    registers[0] = (1u64 << 32) - (1u64 << 16); // SP initial
+    registers[1] = (1u64 << 32) - 2 * zz as u64 - zi as u64; // arg end
+    registers[7] = (1u64 << 32) - zz as u64 - zi as u64; // arg base
+    registers[8] = arguments.len() as u64; // arg length
 
-    Some((code, registers, memory))
+    let mut pvm = Pvm::new(code, bitmask, jump_table, registers, memory, gas);
+    pvm.heap_base = heap_base;
+
+    Some(pvm)
+}
+
+/// Decode a variable-length natural number (JAM codec format).
+/// Returns (value, bytes_consumed) or None.
+fn decode_natural(data: &[u8], offset: usize) -> Option<(usize, usize)> {
+    if offset >= data.len() {
+        return None;
+    }
+
+    let first = data[offset];
+    if first < 128 {
+        // Single byte
+        Some((first as usize, 1))
+    } else if first < 192 {
+        // Two bytes
+        if offset + 2 > data.len() {
+            return None;
+        }
+        let val = ((first as usize & 0x3F) << 8) | data[offset + 1] as usize;
+        Some((val, 2))
+    } else if first < 224 {
+        // Three bytes
+        if offset + 3 > data.len() {
+            return None;
+        }
+        let val = ((first as usize & 0x1F) << 16)
+            | ((data[offset + 1] as usize) << 8)
+            | data[offset + 2] as usize;
+        Some((val, 3))
+    } else {
+        // Four bytes
+        if offset + 4 > data.len() {
+            return None;
+        }
+        let val = ((first as usize & 0x0F) << 24)
+            | ((data[offset + 1] as usize) << 16)
+            | ((data[offset + 2] as usize) << 8)
+            | data[offset + 3] as usize;
+        Some((val, 4))
+    }
 }
 
 /// Map a memory region with zero-filled pages.
@@ -176,9 +251,7 @@ fn read_le_u24(data: &[u8], offset: &mut usize) -> Option<u32> {
     if *offset + 3 > data.len() {
         return None;
     }
-    let val = data[*offset] as u32
-        | ((data[*offset + 1] as u32) << 8)
-        | ((data[*offset + 2] as u32) << 16);
+    let val = data[*offset] as u32 | ((data[*offset + 1] as u32) << 8) | ((data[*offset + 2] as u32) << 16);
     *offset += 3;
     Some(val)
 }
@@ -188,8 +261,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_invalid_program_blob() {
-        // Too short to parse header
-        assert!(initialize_program(&[0; 5], &[]).is_none());
+    fn test_deblob_simple() {
+        // Build a simple blob: |j|=0, z=1, |c|=3, code=[0,1,0], bitmask=[1,1,1]
+        let mut blob = Vec::new();
+        blob.push(0); // |j| = 0 (single byte natural)
+        blob.push(1); // z = 1
+        blob.push(3); // |c| = 3
+        // no jump table entries
+        blob.extend_from_slice(&[0, 1, 0]); // code: trap, fallthrough, trap
+        blob.extend_from_slice(&[1, 1, 1]); // bitmask
+        let (code, bitmask, jt) = deblob(&blob).unwrap();
+        assert_eq!(code, vec![0, 1, 0]);
+        assert_eq!(bitmask, vec![1, 1, 1]);
+        assert!(jt.is_empty());
+    }
+
+    #[test]
+    fn test_deblob_with_jump_table() {
+        let mut blob = Vec::new();
+        blob.push(2); // |j| = 2
+        blob.push(2); // z = 2 (2-byte entries)
+        blob.push(2); // |c| = 2
+        blob.extend_from_slice(&[0, 0]); // j[0] = 0
+        blob.extend_from_slice(&[1, 0]); // j[1] = 1
+        blob.extend_from_slice(&[0, 1]); // code: trap, fallthrough
+        blob.extend_from_slice(&[1, 1]); // bitmask
+        let (code, bitmask, jt) = deblob(&blob).unwrap();
+        assert_eq!(code, vec![0, 1]);
+        assert_eq!(bitmask, vec![1, 1]);
+        assert_eq!(jt, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_invalid_blob() {
+        assert!(deblob(&[]).is_none());
+        assert!(deblob(&[0]).is_none()); // missing z
     }
 }
