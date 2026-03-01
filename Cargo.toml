@@ -1,8 +1,41 @@
-[package]
-name = "grey"
+[workspace]
+resolver = "3"
+members = [
+    "crates/grey",
+    "crates/grey-types",
+    "crates/grey-codec",
+    "crates/grey-crypto",
+    "crates/grey-pvm",
+    "crates/grey-merkle",
+    "crates/grey-erasure",
+    "crates/grey-state",
+    "crates/grey-consensus",
+    "crates/grey-services",
+    "crates/grey-network",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "LLM-written JAM implementation in Rust."
 
-[dependencies]
+[workspace.dependencies]
+# Internal crates
+grey-types = { path = "crates/grey-types" }
+grey-codec = { path = "crates/grey-codec" }
+grey-crypto = { path = "crates/grey-crypto" }
+grey-pvm = { path = "crates/grey-pvm" }
+grey-merkle = { path = "crates/grey-merkle" }
+grey-erasure = { path = "crates/grey-erasure" }
+grey-state = { path = "crates/grey-state" }
+grey-consensus = { path = "crates/grey-consensus" }
+grey-services = { path = "crates/grey-services" }
+grey-network = { path = "crates/grey-network" }
+
+# External dependencies
+blake2 = "0.10"
+sha3 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+thiserror = "2"
+hex = "0.4"

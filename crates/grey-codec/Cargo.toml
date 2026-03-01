@@ -1,0 +1,10 @@
+[package]
+name = "grey-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JAM serialization and deserialization codec."
+
+[dependencies]
+grey-types = { workspace = true }
+thiserror = { workspace = true }

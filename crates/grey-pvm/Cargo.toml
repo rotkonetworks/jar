@@ -1,0 +1,10 @@
+[package]
+name = "grey-pvm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Polkadot Virtual Machine (PVM) implementation for JAM."
+
+[dependencies]
+grey-types = { workspace = true }
+thiserror = { workspace = true }
