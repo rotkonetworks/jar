@@ -198,27 +198,29 @@ crates/
 | Phase | Crate | Status | Tests |
 |-------|-------|--------|-------|
 | 1 | `grey-types` | Complete — all core types, constants, data structures | 0 |
-| 1 | `grey-codec` | Complete — JAM encode/decode with natural numbers | 7 |
-| 1 | `grey-crypto` | Complete — Blake2b, Keccak, Ed25519, Fisher-Yates | 13 |
+| 1 | `grey-codec` | Complete — JAM encode/decode with natural numbers | 22 |
+| 1 | `grey-crypto` | Complete — Blake2b, Keccak, Ed25519, Fisher-Yates, Bandersnatch Ring VRF | 15 |
 | 2 | `grey-pvm` | Complete — full ISA, arg decoding, VM execution, deblob | 31 |
-| 3 | `grey-merkle` | Complete — binary Patricia trie, balanced tree, MMR | 10 |
-| 3 | `grey-erasure` | Scaffolded — API stubs only | 0 |
-| 4 | `grey-state` | Complete — 8-step state transition with tests | 10 |
+| 3 | `grey-merkle` | Complete — binary Patricia trie, balanced tree, MMR | 11 |
+| 3 | `grey-erasure` | Complete — RS encode/decode with k-independent symbol coding | 24 |
+| 4 | `grey-state` | Complete — 8-step state transition + Safrole with Ring VRF | 129 |
 | 5 | `grey-consensus` | Complete — Safrole (entropy, keys, tickets, fallback) | 25 |
 | 6 | `grey-services` | Partial — accumulation pipeline (PVM invocation stubbed) | 11 |
 | 7 | `grey-network` | Scaffolded — API stubs only | 0 |
 | 7 | `grey` | Scaffolded — CLI entry point | 0 |
 
-**Total: 108 tests passing across all crates.**
+**Total: 268 tests passing across all crates.**
 
 ### What's Implemented
 - Full PVM instruction set (~150 opcodes) with correct Gray Paper encoding
+- Reed-Solomon erasure coding (Appendix H) with k-independent symbol encoding
 - Safrole consensus: entropy accumulation, key rotation, ticket contest, fallback
+- Bandersnatch Ring VRF: ring commitment computation and proof verification (Appendix G)
 - Block-level state transition: judgments, assurances, guarantees, statistics, preimages
+- Safrole sub-transition with real Ring VRF ticket verification (21/21 test vectors)
 - Accumulation pipeline structure (Δ+, Δ*, Δ1) with gas budgeting
 
 ### What's Next
-- Reed-Solomon erasure coding in `grey-erasure`
 - PVM host-call interface for accumulation (ΨA) in `grey-services`
 - P2P networking layer in `grey-network`
 - Node executable with genesis, block import, validator mode

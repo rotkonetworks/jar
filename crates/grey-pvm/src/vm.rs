@@ -197,6 +197,8 @@ impl Pvm {
             // === A.5.2: One immediate ===
             Opcode::Ecalli => {
                 if let Args::Imm { imm } = args {
+                    // Advance PC to next instruction before returning (eq A.9)
+                    self.pc = next_pc;
                     return Some(ExitReason::HostCall(imm as u32));
                 }
             }

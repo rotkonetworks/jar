@@ -6,6 +6,7 @@
 //! - Ed25519 signatures
 //! - Fisher-Yates shuffle (Appendix F)
 
+pub mod bandersnatch;
 pub mod blake2b;
 pub mod ed25519;
 pub mod keccak;

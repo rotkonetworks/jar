@@ -9,26 +9,53 @@ pub trait Decode: Sized {
     fn decode(data: &[u8]) -> Result<(Self, usize), CodecError>;
 }
 
-/// Decode a variable-length natural number (inverse of encode_natural).
+/// Decode a JAM compact/variable-length natural number (inverse of encode_natural/encode_compact).
+///
+/// JAM prefix-length encoding: leading 1-bits of the first byte indicate
+/// the number of additional bytes. The first byte also carries high bits
+/// of the value; remaining bytes are little-endian.
+///
+/// Returns `(value, bytes_consumed)`.
 pub fn decode_natural(data: &[u8]) -> Result<(usize, usize), CodecError> {
-    let mut result: usize = 0;
-    let mut shift = 0;
-    for (i, &byte) in data.iter().enumerate() {
-        result |= ((byte & 0x7F) as usize) << shift;
-        if byte & 0x80 == 0 {
-            return Ok((result, i + 1));
-        }
-        shift += 7;
-        if shift >= 64 {
-            return Err(CodecError::InvalidEncoding(
-                "natural number too large".into(),
-            ));
-        }
+    let (val, consumed) = decode_compact(data)?;
+    Ok((val as usize, consumed))
+}
+
+/// Decode a JAM compact-encoded u64 value.
+///
+/// Returns `(value, bytes_consumed)`.
+pub fn decode_compact(data: &[u8]) -> Result<(u64, usize), CodecError> {
+    ensure_bytes(data, 1)?;
+    let header = data[0];
+    let len = header.leading_ones() as usize; // 0..=8
+
+    if len == 8 {
+        // 0xFF: read next 8 bytes as u64 LE
+        ensure_bytes(data, 9)?;
+        let value = u64::from_le_bytes(data[1..9].try_into().unwrap());
+        return Ok((value, 9));
     }
-    Err(CodecError::UnexpectedEof {
-        needed: 1,
-        available: 0,
-    })
+
+    ensure_bytes(data, 1 + len)?;
+
+    // Threshold: the minimum header value for this length class
+    let threshold: u64 = if len == 0 {
+        0
+    } else {
+        256 - (1u64 << (8 - len))
+    };
+
+    // High bits from header byte
+    let header_value = (header as u64) - threshold;
+
+    // Low bits from remaining bytes (little-endian)
+    let mut low: u64 = 0;
+    for i in 0..len {
+        low |= (data[1 + i] as u64) << (8 * i);
+    }
+
+    let value = (header_value << (8 * len)) | low;
+    Ok((value, 1 + len))
 }
 
 fn ensure_bytes(data: &[u8], needed: usize) -> Result<(), CodecError> {

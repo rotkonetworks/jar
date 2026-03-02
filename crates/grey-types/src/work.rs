@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 /// Work report R (eq 11.2).
 #[derive(Clone, Debug)]
 pub struct WorkReport {
-    /// s: Availability specification.
-    pub availability: AvailabilitySpec,
+    /// s: Availability specification (WorkPackageSpec in ASN).
+    pub package_spec: AvailabilitySpec,
 
     /// c: Refinement context.
     pub context: RefinementContext,
@@ -18,20 +18,20 @@ pub struct WorkReport {
     /// a: Authorizer hash.
     pub authorizer_hash: Hash,
 
-    /// t: Authorizer trace (opaque blob).
-    pub authorizer_trace: Vec<u8>,
+    /// g: Gas consumed during Is-Authorized invocation.
+    pub auth_gas_used: Gas,
+
+    /// o: Authorization output (opaque blob).
+    pub auth_output: Vec<u8>,
 
     /// l: Segment-root lookup dictionary.
     pub segment_root_lookup: BTreeMap<Hash, Hash>,
 
-    /// g: Gas consumed during Is-Authorized invocation.
-    pub auth_gas_used: Gas,
-
-    /// d: Work digests.
-    pub digests: Vec<WorkDigest>,
+    /// d: Work results (WorkResult in ASN, contains digest + refine load).
+    pub results: Vec<WorkDigest>,
 }
 
-/// Availability specification Y (eq 11.5).
+/// Work-package availability specification (WorkPackageSpec in ASN, eq 11.5).
 #[derive(Clone, Debug)]
 pub struct AvailabilitySpec {
     /// p: Work-package hash.
@@ -43,11 +43,11 @@ pub struct AvailabilitySpec {
     /// u: Erasure root.
     pub erasure_root: Hash,
 
-    /// e: Segment root.
-    pub segment_root: Hash,
+    /// e: Exports root (segment root).
+    pub exports_root: Hash,
 
-    /// n: Segment count.
-    pub segment_count: u32,
+    /// n: Exports count.
+    pub exports_count: u16,
 }
 
 /// Refinement context C (eq 11.4).
@@ -72,7 +72,8 @@ pub struct RefinementContext {
     pub prerequisites: Vec<Hash>,
 }
 
-/// Work digest D (eq 11.6).
+/// Work result (WorkResult in ASN, eq 11.6).
+/// Combines the work digest fields and refine load.
 #[derive(Clone, Debug)]
 pub struct WorkDigest {
     /// s: Service index.
@@ -85,63 +86,64 @@ pub struct WorkDigest {
     pub payload_hash: Hash,
 
     /// g: Gas limit for accumulation of this item.
-    pub gas_limit: Gas,
+    pub accumulate_gas: Gas,
 
-    /// l: Work result — either output blob or error.
+    /// l: Work execution result — either output blob or error.
     pub result: WorkResult,
+
+    // --- RefineLoad fields below ---
 
     /// u: Actual gas used during refinement.
     pub gas_used: Gas,
 
     /// i: Number of segments imported.
-    pub imports_count: u32,
+    pub imports_count: u16,
 
     /// x: Number of extrinsics used.
-    pub extrinsics_count: u32,
+    pub extrinsics_count: u16,
 
     /// z: Total size of extrinsics in octets.
     pub extrinsics_size: u32,
 
     /// e: Number of segments exported.
-    pub exports_count: u32,
+    pub exports_count: u16,
 }
 
-/// Work result: either a successful output blob or an error (eq 11.7).
+/// Work execution result (WorkExecResult in ASN, eq 11.7).
+/// Discriminant values: ok=0, out-of-gas=1, panic=2, bad-exports=3, bad-code=4, code-oversize=5.
 #[derive(Clone, Debug)]
 pub enum WorkResult {
-    /// Successful refinement output.
+    /// Successful refinement output (discriminant 0).
     Ok(Vec<u8>),
-    /// Out of gas (∞).
+    /// Out of gas (discriminant 1).
     OutOfGas,
-    /// Panic (☇).
+    /// Panic (discriminant 2).
     Panic,
-    /// Invalid export count (⊚).
-    InvalidExportCount,
-    /// Digest too large (⊖).
-    DigestTooLarge,
-    /// Service code not available (BAD).
-    CodeNotAvailable,
-    /// Service code too large (BIG).
-    CodeTooLarge,
+    /// Invalid export count (discriminant 3).
+    BadExports,
+    /// Invalid code / code not available (discriminant 4).
+    BadCode,
+    /// Code size exceeds limits (discriminant 5).
+    CodeOversize,
 }
 
-/// Work package P (eq 14.2).
+/// Work package P (eq 14.2, WorkPackage in ASN).
 #[derive(Clone, Debug)]
 pub struct WorkPackage {
-    /// h: Authorization hash.
-    pub authorization_hash: Hash,
+    /// Service ID hosting the authorization code.
+    pub auth_code_host: ServiceId,
 
-    /// u: Authorization code (blob).
-    pub authorization_code: Vec<u8>,
+    /// Hash of the authorizer's code.
+    pub auth_code_hash: Hash,
 
-    /// c: Authorization configuration.
-    pub authorization_config: Vec<u8>,
+    /// Refinement context.
+    pub context: RefinementContext,
 
-    /// j: Prerequisite work-package hashes.
-    pub prerequisites: Vec<Hash>,
+    /// Authorization data.
+    pub authorization: Vec<u8>,
 
-    /// f: Authorization token.
-    pub auth_token: Vec<u8>,
+    /// Parameters for the authorizer.
+    pub authorizer_config: Vec<u8>,
 
     /// w: Work items.
     pub items: Vec<WorkItem>,
@@ -175,9 +177,11 @@ pub struct WorkItem {
     pub extrinsics: Vec<(Hash, u32)>,
 }
 
-/// An import segment reference.
+/// An import segment reference (ImportSpec in ASN).
 #[derive(Clone, Debug)]
 pub struct ImportSegment {
+    /// Root hash of the segment tree.
     pub hash: Hash,
-    pub index: u32,
+    /// Index of the segment (U16 in ASN).
+    pub index: u16,
 }

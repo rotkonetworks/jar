@@ -2,6 +2,15 @@
 //!
 //! Implements the state transition function Υ(σ, B) → σ' (eq 4.1).
 
+pub mod accumulate;
+pub mod assurances;
+pub mod authorizations;
+pub mod disputes;
+pub mod history;
+pub mod preimages;
+pub mod reports;
+pub mod safrole;
+pub mod statistics;
 pub mod transition;
 
 use grey_types::header::Block;

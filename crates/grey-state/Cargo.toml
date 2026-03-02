@@ -12,3 +12,8 @@ grey-crypto = { workspace = true }
 grey-pvm = { workspace = true }
 grey-merkle = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }

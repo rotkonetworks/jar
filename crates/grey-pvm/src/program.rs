@@ -51,15 +51,19 @@ pub fn deblob(blob: &[u8]) -> Option<(Vec<u8>, Vec<u8>, Vec<u32>)> {
     let code = blob[offset..offset + code_len].to_vec();
     offset += code_len;
 
-    // Read bitmask: code_len bytes (|k| = |c|)
-    if offset + code_len > blob.len() {
+    // Read bitmask: packed bitfield, ceil(code_len/8) bytes (eq C.9)
+    let bitmask_bytes = (code_len + 7) / 8;
+    if offset + bitmask_bytes > blob.len() {
         return None;
     }
-    let bitmask = blob[offset..offset + code_len].to_vec();
+    let packed_bitmask = &blob[offset..offset + bitmask_bytes];
 
-    // Validate: |k| = |c|
-    if bitmask.len() != code.len() {
-        return None;
+    // Unpack packed bits to one byte per instruction (LSB first per byte)
+    let mut bitmask = vec![0u8; code_len];
+    for i in 0..code_len {
+        let byte_idx = i / 8;
+        let bit_idx = i % 8;
+        bitmask[i] = (packed_bitmask[byte_idx] >> bit_idx) & 1;
     }
 
     Some((code, bitmask, jump_table))
@@ -69,36 +73,51 @@ pub fn deblob(blob: &[u8]) -> Option<(Vec<u8>, Vec<u8>, Vec<u32>)> {
 ///
 /// Returns a fully initialized PVM or None if the program blob is invalid.
 pub fn initialize_program(program_blob: &[u8], arguments: &[u8], gas: Gas) -> Option<Pvm> {
+    // Skip metadata prefix if present (polkavm-linker output includes metadata).
+    // Detect by checking if the first 3 bytes as E3(ro_size) are too large.
+    let blob = skip_metadata(program_blob);
+    eprintln!("[init_prog] blob_len={} after_skip={}", program_blob.len(), blob.len());
+
     // Parse the standard program blob header (eq A.38):
-    // E₃(|o|) ⌢ E₃(|w|) ⌢ E₂(z) ⌢ E₃(s) ⌢ o ⌢ w ⌢ p
-    if program_blob.len() < 11 {
+    // E₃(|o|) ⌢ E₃(|w|) ⌢ E₂(z) ⌢ E₃(s) ⌢ o ⌢ w ⌢ E₄(|c|) ⌢ c
+    if blob.len() < 15 {
+        eprintln!("[init_prog] blob too small: {}", blob.len());
         return None;
     }
 
     let mut offset = 0;
 
-    let ro_size = read_le_u24(program_blob, &mut offset)? as u32;
-    let rw_size = read_le_u24(program_blob, &mut offset)? as u32;
-    let heap_pages = read_le_u16(program_blob, &mut offset)? as u32;
-    let stack_size = read_le_u24(program_blob, &mut offset)? as u32;
+    let ro_size = read_le_u24(blob, &mut offset)? as u32;
+    let rw_size = read_le_u24(blob, &mut offset)? as u32;
+    let heap_pages = read_le_u16(blob, &mut offset)? as u32;
+    let stack_size = read_le_u24(blob, &mut offset)? as u32;
+    eprintln!("[init_prog] ro={ro_size} rw={rw_size} heap_pages={heap_pages} stack={stack_size}");
 
     // Read read-only data
-    if offset + ro_size as usize > program_blob.len() {
+    if offset + ro_size as usize > blob.len() {
         return None;
     }
-    let ro_data = &program_blob[offset..offset + ro_size as usize];
+    let ro_data = &blob[offset..offset + ro_size as usize];
     offset += ro_size as usize;
 
     // Read read-write data
-    if offset + rw_size as usize > program_blob.len() {
+    if offset + rw_size as usize > blob.len() {
         return None;
     }
-    let rw_data = &program_blob[offset..offset + rw_size as usize];
+    let rw_data = &blob[offset..offset + rw_size as usize];
     offset += rw_size as usize;
 
-    // Remaining bytes are the program blob for deblob
-    let program_data = &program_blob[offset..];
-    let (code, bitmask, jump_table) = deblob(program_data)?;
+    // Read E₄(|c|) — 4-byte LE code blob length
+    let code_len = read_le_u32(blob, &mut offset)? as usize;
+    eprintln!("[init_prog] E4 code_len={code_len} remaining={}", blob.len() - offset);
+    if offset + code_len > blob.len() {
+        eprintln!("[init_prog] code_len too large");
+        return None;
+    }
+    let program_data = &blob[offset..offset + code_len];
+    let deblob_result = deblob(program_data);
+    eprintln!("[init_prog] deblob result={}", deblob_result.is_some());
+    let (code, bitmask, jump_table) = deblob_result?;
 
     let zz = PVM_ZONE_SIZE;
     let zi = PVM_INIT_INPUT_SIZE;
@@ -185,23 +204,23 @@ fn decode_natural(data: &[u8], offset: usize) -> Option<(usize, usize)> {
         let val = ((first as usize & 0x3F) << 8) | data[offset + 1] as usize;
         Some((val, 2))
     } else if first < 224 {
-        // Three bytes
+        // Three bytes: remaining 2 bytes in LE order
         if offset + 3 > data.len() {
             return None;
         }
         let val = ((first as usize & 0x1F) << 16)
-            | ((data[offset + 1] as usize) << 8)
-            | data[offset + 2] as usize;
+            | ((data[offset + 2] as usize) << 8)
+            | data[offset + 1] as usize;
         Some((val, 3))
     } else {
-        // Four bytes
+        // Four bytes: remaining 3 bytes in LE order
         if offset + 4 > data.len() {
             return None;
         }
         let val = ((first as usize & 0x0F) << 24)
-            | ((data[offset + 1] as usize) << 16)
+            | ((data[offset + 3] as usize) << 16)
             | ((data[offset + 2] as usize) << 8)
-            | data[offset + 3] as usize;
+            | data[offset + 1] as usize;
         Some((val, 4))
     }
 }
@@ -247,6 +266,42 @@ fn read_le_u16(data: &[u8], offset: &mut usize) -> Option<u16> {
     Some(val)
 }
 
+/// Skip metadata prefix from polkavm-linker output.
+/// Detects metadata by checking if the first 3 bytes as E3(ro_size) would be too large.
+fn skip_metadata(blob: &[u8]) -> &[u8] {
+    if blob.len() < 14 {
+        return blob;
+    }
+    // Try parsing as standard program header (first 3 bytes = E3(ro_size) LE)
+    let ro_size = blob[0] as u32 | ((blob[1] as u32) << 8) | ((blob[2] as u32) << 16);
+    if (ro_size as usize) + 14 <= blob.len() {
+        // Looks like a valid standard program header
+        return blob;
+    }
+    // Assume metadata: varint(length) prefix + metadata bytes
+    if let Some((meta_len, consumed)) = decode_natural(blob, 0) {
+        let skip = consumed + meta_len;
+        if skip < blob.len() {
+            return &blob[skip..];
+        }
+    }
+    blob
+}
+
+fn read_le_u32(data: &[u8], offset: &mut usize) -> Option<u32> {
+    if *offset + 4 > data.len() {
+        return None;
+    }
+    let val = u32::from_le_bytes([
+        data[*offset],
+        data[*offset + 1],
+        data[*offset + 2],
+        data[*offset + 3],
+    ]);
+    *offset += 4;
+    Some(val)
+}
+
 fn read_le_u24(data: &[u8], offset: &mut usize) -> Option<u32> {
     if *offset + 3 > data.len() {
         return None;
@@ -262,14 +317,14 @@ mod tests {
 
     #[test]
     fn test_deblob_simple() {
-        // Build a simple blob: |j|=0, z=1, |c|=3, code=[0,1,0], bitmask=[1,1,1]
+        // Build a simple blob: |j|=0, z=1, |c|=3, code=[0,1,0], bitmask packed
         let mut blob = Vec::new();
         blob.push(0); // |j| = 0 (single byte natural)
         blob.push(1); // z = 1
         blob.push(3); // |c| = 3
         // no jump table entries
         blob.extend_from_slice(&[0, 1, 0]); // code: trap, fallthrough, trap
-        blob.extend_from_slice(&[1, 1, 1]); // bitmask
+        blob.push(0x07); // packed bitmask: bits 0,1,2 set = 0b00000111
         let (code, bitmask, jt) = deblob(&blob).unwrap();
         assert_eq!(code, vec![0, 1, 0]);
         assert_eq!(bitmask, vec![1, 1, 1]);
@@ -285,7 +340,7 @@ mod tests {
         blob.extend_from_slice(&[0, 0]); // j[0] = 0
         blob.extend_from_slice(&[1, 0]); // j[1] = 1
         blob.extend_from_slice(&[0, 1]); // code: trap, fallthrough
-        blob.extend_from_slice(&[1, 1]); // bitmask
+        blob.push(0x03); // packed bitmask: bits 0,1 set = 0b00000011
         let (code, bitmask, jt) = deblob(&blob).unwrap();
         assert_eq!(code, vec![0, 1]);
         assert_eq!(bitmask, vec![1, 1]);

@@ -1,9 +1,10 @@
 //! Block state transition implementation (eq 4.1, 4.5-4.20).
 
 use crate::TransitionError;
+use grey_types::config::Config;
 use grey_types::constants::*;
 use grey_types::header::Block;
-use grey_types::state::{PendingReport, RecentBlockInfo, State, ValidatorRecord};
+use grey_types::state::{PendingReport, RecentBlockInfo, State};
 use grey_types::Hash;
 
 // Derived constants
@@ -25,6 +26,11 @@ const AUTH_POOL_SIZE: usize = MAX_AUTH_POOL_ITEMS;
 /// 7. Statistics: π' from block activity
 /// 8. Authorization: α' from ϕ'
 pub fn apply(state: &State, block: &Block) -> Result<State, TransitionError> {
+    apply_with_config(state, block, &Config::full())
+}
+
+/// Apply a block with a specific configuration (for testing with tiny constants).
+pub fn apply_with_config(state: &State, block: &Block, config: &Config) -> Result<State, TransitionError> {
     let header = &block.header;
     let extrinsic = &block.extrinsic;
 
@@ -53,7 +59,14 @@ pub fn apply(state: &State, block: &Block) -> Result<State, TransitionError> {
     update_recent_history(&mut new_state, header, &extrinsic.guarantees);
 
     // Step 7: Update validator statistics (Section 13)
-    update_statistics(&mut new_state, state.timeslot, header, extrinsic, &available_reports);
+    crate::statistics::update_statistics(
+        config,
+        &mut new_state.statistics,
+        state.timeslot,
+        header.timeslot,
+        header.author_index,
+        extrinsic,
+    );
 
     // Step 8: Process preimages (Section 12.4)
     process_preimages(&mut new_state, &extrinsic.preimages, header.timeslot);
@@ -168,8 +181,12 @@ fn process_assurances(
     let mut assurance_counts = vec![0u32; num_cores];
 
     for assurance in assurances {
-        for (core, &assured) in assurance.bitfield.iter().enumerate() {
-            if assured && core < num_cores {
+        for core in 0..num_cores {
+            let byte_idx = core / 8;
+            let bit_idx = core % 8;
+            if byte_idx < assurance.bitfield.len()
+                && (assurance.bitfield[byte_idx] & (1 << bit_idx)) != 0
+            {
                 assurance_counts[core] += 1;
             }
         }
@@ -255,7 +272,7 @@ fn update_recent_history(
     for guarantee in guarantees {
         let report = &guarantee.report;
         // Map: work-package hash → authorizer hash
-        reported_packages.insert(report.availability.package_hash, report.authorizer_hash);
+        reported_packages.insert(report.package_spec.package_hash, report.authorizer_hash);
     }
 
     // Compute header hash
@@ -274,69 +291,6 @@ fn update_recent_history(
     // Keep only the last H entries
     while state.recent_blocks.headers.len() > RECENT_HISTORY_SIZE {
         state.recent_blocks.headers.remove(0);
-    }
-}
-
-/// Update validator activity statistics (Section 13, eq 13.3-13.5).
-fn update_statistics(
-    state: &mut State,
-    prior_timeslot: u32,
-    header: &grey_types::header::Header,
-    extrinsic: &grey_types::header::Extrinsic,
-    _available_reports: &[grey_types::work::WorkReport],
-) {
-    let old_epoch = prior_timeslot / EPOCH_LENGTH as u32;
-    let new_epoch = header.timeslot / EPOCH_LENGTH as u32;
-
-    // Epoch transition: rotate statistics (eq 13.4)
-    if new_epoch > old_epoch {
-        state.statistics.last = state.statistics.current.clone();
-        state.statistics.current = vec![ValidatorRecord::default(); TOTAL_VALIDATORS_USIZE];
-    }
-
-    // Ensure current has enough entries
-    while state.statistics.current.len() < TOTAL_VALIDATORS_USIZE {
-        state.statistics.current.push(ValidatorRecord::default());
-    }
-
-    let author = header.author_index as usize;
-    if author < state.statistics.current.len() {
-        // Block author: increment blocks_produced (eq 13.5)
-        state.statistics.current[author].blocks_produced += 1;
-
-        // Tickets introduced
-        state.statistics.current[author].tickets_introduced +=
-            extrinsic.tickets.len() as u32;
-
-        // Preimages introduced
-        state.statistics.current[author].preimages_introduced +=
-            extrinsic.preimages.len() as u32;
-
-        // Preimage total bytes
-        let preimage_bytes: u64 = extrinsic
-            .preimages
-            .iter()
-            .map(|(_, data)| data.len() as u64)
-            .sum();
-        state.statistics.current[author].preimage_bytes += preimage_bytes;
-    }
-
-    // Assurances: each validator that submitted an assurance
-    for assurance in &extrinsic.assurances {
-        let idx = assurance.validator_index as usize;
-        if idx < state.statistics.current.len() {
-            state.statistics.current[idx].assurances_made += 1;
-        }
-    }
-
-    // Guarantees: each validator that guaranteed a report
-    for guarantee in &extrinsic.guarantees {
-        for (validator_idx, _sig) in &guarantee.credentials {
-            let idx = *validator_idx as usize;
-            if idx < state.statistics.current.len() {
-                state.statistics.current[idx].reports_guaranteed += 1;
-            }
-        }
     }
 }
 
@@ -452,18 +406,18 @@ mod tests {
                 extrinsic_hash: Hash::ZERO,
                 timeslot,
                 epoch_marker: None,
-                winning_tickets_marker: None,
-                offenders_marker: vec![],
+                tickets_marker: None,
                 author_index: 0,
                 vrf_signature: BandersnatchSignature::default(),
+                offenders_marker: vec![],
                 seal: BandersnatchSignature::default(),
             },
             extrinsic: Extrinsic {
                 tickets: vec![],
-                disputes: DisputesExtrinsic::default(),
                 preimages: vec![],
-                assurances: vec![],
                 guarantees: vec![],
+                assurances: vec![],
+                disputes: DisputesExtrinsic::default(),
             },
         }
     }

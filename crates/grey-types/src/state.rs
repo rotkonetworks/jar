@@ -92,7 +92,7 @@ pub enum SealKeySeries {
 }
 
 /// Recent block history β (eq 7.1-7.4).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentBlocks {
     /// βH: Information on the most recent H blocks.
     pub headers: Vec<RecentBlockInfo>,
@@ -102,7 +102,7 @@ pub struct RecentBlocks {
 }
 
 /// Info retained for each recent block (eq 7.2).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentBlockInfo {
     /// h: Header hash.
     pub header_hash: Hash,
@@ -199,19 +199,25 @@ pub struct ValidatorStatistics {
 }
 
 /// Per-validator performance record.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct ValidatorRecord {
     /// b: Blocks produced.
+    #[serde(rename = "blocks")]
     pub blocks_produced: u32,
     /// t: Tickets introduced.
+    #[serde(rename = "tickets")]
     pub tickets_introduced: u32,
     /// p: Preimages introduced.
+    #[serde(rename = "pre_images")]
     pub preimages_introduced: u32,
     /// d: Total preimage bytes.
+    #[serde(rename = "pre_images_size")]
     pub preimage_bytes: u64,
     /// g: Reports guaranteed.
+    #[serde(rename = "guarantees")]
     pub reports_guaranteed: u32,
     /// a: Availability assurances made.
+    #[serde(rename = "assurances")]
     pub assurances_made: u32,
 }
 

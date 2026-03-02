@@ -3,13 +3,31 @@
 //! This crate defines the foundational types matching the Gray Paper specification v0.7.2.
 //! Greek-letter state components are mapped to descriptive Rust names.
 
+pub mod config;
 pub mod constants;
 pub mod header;
+pub mod serde_utils;
 pub mod state;
 pub mod validator;
 pub mod work;
 
 use std::fmt;
+
+/// Helper: decode a 0x-prefixed hex string to bytes.
+fn decode_hex(s: &str) -> Result<Vec<u8>, hex::FromHexError> {
+    hex::decode(s.strip_prefix("0x").unwrap_or(s))
+}
+
+/// Helper: decode hex string into a fixed-size array.
+fn decode_hex_fixed<const N: usize>(s: &str) -> Result<[u8; N], String> {
+    let bytes = decode_hex(s).map_err(|e| e.to_string())?;
+    if bytes.len() != N {
+        return Err(format!("expected {} bytes, got {}", N, bytes.len()));
+    }
+    let mut arr = [0u8; N];
+    arr.copy_from_slice(&bytes);
+    Ok(arr)
+}
 
 /// A 32-byte cryptographic hash value (H in the spec).
 /// Used for Blake2b-256 output, block hashes, state roots, etc.
@@ -49,6 +67,19 @@ impl AsRef<[u8]> for Hash {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for Hash {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s: String = serde::Deserialize::deserialize(d)?;
+        Ok(Hash(decode_hex_fixed(&s).map_err(serde::de::Error::custom)?))
+    }
+}
+
+impl serde::Serialize for Hash {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&format!("0x{}", hex::encode(self.0)))
+    }
+}
+
 /// An Ed25519 public key (H̄ in the spec). Subset of B32.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Ed25519PublicKey(pub [u8; 32]);
@@ -59,6 +90,13 @@ impl fmt::Debug for Ed25519PublicKey {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for Ed25519PublicKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s: String = serde::Deserialize::deserialize(d)?;
+        Ok(Ed25519PublicKey(decode_hex_fixed(&s).map_err(serde::de::Error::custom)?))
+    }
+}
+
 /// A Bandersnatch public key (H̃ in the spec). Subset of B32.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct BandersnatchPublicKey(pub [u8; 32]);
@@ -66,6 +104,13 @@ pub struct BandersnatchPublicKey(pub [u8; 32]);
 impl fmt::Debug for BandersnatchPublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Bandersnatch({})", hex::encode(self.0))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BandersnatchPublicKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s: String = serde::Deserialize::deserialize(d)?;
+        Ok(BandersnatchPublicKey(decode_hex_fixed(&s).map_err(serde::de::Error::custom)?))
     }
 }
 
@@ -85,6 +130,13 @@ impl fmt::Debug for BlsPublicKey {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for BlsPublicKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s: String = serde::Deserialize::deserialize(d)?;
+        Ok(BlsPublicKey(decode_hex_fixed(&s).map_err(serde::de::Error::custom)?))
+    }
+}
+
 /// A Bandersnatch ring root (B° in the spec). Subset of B144.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct BandersnatchRingRoot(pub [u8; 144]);
@@ -98,6 +150,13 @@ impl Default for BandersnatchRingRoot {
 impl fmt::Debug for BandersnatchRingRoot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "RingRoot({}...)", hex::encode(&self.0[..8]))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BandersnatchRingRoot {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s: String = serde::Deserialize::deserialize(d)?;
+        Ok(BandersnatchRingRoot(decode_hex_fixed(&s).map_err(serde::de::Error::custom)?))
     }
 }
 
@@ -117,6 +176,13 @@ impl fmt::Debug for Ed25519Signature {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for Ed25519Signature {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s: String = serde::Deserialize::deserialize(d)?;
+        Ok(Ed25519Signature(decode_hex_fixed(&s).map_err(serde::de::Error::custom)?))
+    }
+}
+
 /// A Bandersnatch signature. B96.
 #[derive(Clone, PartialEq, Eq)]
 pub struct BandersnatchSignature(pub [u8; 96]);
@@ -130,6 +196,13 @@ impl Default for BandersnatchSignature {
 impl fmt::Debug for BandersnatchSignature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "BanderSig({}...)", hex::encode(&self.0[..8]))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BandersnatchSignature {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s: String = serde::Deserialize::deserialize(d)?;
+        Ok(BandersnatchSignature(decode_hex_fixed(&s).map_err(serde::de::Error::custom)?))
     }
 }
 

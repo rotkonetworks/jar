@@ -24,17 +24,17 @@ pub struct Header {
     /// HE: Epoch marker (optional).
     pub epoch_marker: Option<EpochMarker>,
 
-    /// HW: Winning-tickets marker (optional).
-    pub winning_tickets_marker: Option<WinningTicketsMarker>,
-
-    /// HO: Offenders marker — Ed25519 keys of misbehaving validators.
-    pub offenders_marker: Vec<Ed25519PublicKey>,
+    /// HW: Tickets marker (optional, TicketsMark in ASN).
+    pub tickets_marker: Option<Vec<Ticket>>,
 
     /// HI: Block author index into the validator set.
     pub author_index: ValidatorIndex,
 
     /// HV: Entropy-yielding VRF signature.
     pub vrf_signature: BandersnatchSignature,
+
+    /// HO: Offenders marker — Ed25519 keys of misbehaving validators.
+    pub offenders_marker: Vec<Ed25519PublicKey>,
 
     /// HS: Block seal signature.
     pub seal: BandersnatchSignature,
@@ -54,22 +54,15 @@ pub struct EpochMarker {
     pub validators: Vec<(BandersnatchPublicKey, Ed25519PublicKey)>,
 }
 
-/// Winning-tickets marker (eq 6.28).
-/// The final sequence of ticket identifiers for the next epoch.
-#[derive(Clone, Debug)]
-pub struct WinningTicketsMarker {
-    pub tickets: Vec<Ticket>,
-}
-
-/// A seal-key ticket T (eq 6.6).
-/// Combination of a verifiably random identifier and entry index.
-#[derive(Clone, Debug)]
+/// A seal-key ticket body (TicketBody in ASN, eq 6.6).
+/// Combination of a verifiably random identifier and attempt number.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Ticket {
     /// y: Ticket identifier (VRF output hash).
     pub id: Hash,
 
-    /// e: Entry index (∈ N_N where N = 2).
-    pub entry_index: u32,
+    /// a: Attempt number (U8 in ASN, ∈ N_N where N = 2).
+    pub attempt: u8,
 }
 
 /// Block B ≡ (H, E) (eq 4.2).
@@ -79,32 +72,35 @@ pub struct Block {
     pub extrinsic: Extrinsic,
 }
 
-/// Extrinsic data E ≡ (ET, ED, EP, EA, EG) (eq 4.3).
+/// Extrinsic data (Extrinsic in ASN, eq 4.3).
+/// Field ordering matches ASN: tickets, preimages, guarantees, assurances, disputes.
 #[derive(Clone, Debug)]
 pub struct Extrinsic {
     /// ET: Tickets for seal-key contest.
     pub tickets: TicketsExtrinsic,
 
-    /// ED: Dispute information.
-    pub disputes: DisputesExtrinsic,
-
     /// EP: Preimage lookups.
     pub preimages: PreimagesExtrinsic,
+
+    /// EG: Work report guarantees.
+    pub guarantees: GuaranteesExtrinsic,
 
     /// EA: Availability assurances.
     pub assurances: AssurancesExtrinsic,
 
-    /// EG: Work report guarantees.
-    pub guarantees: GuaranteesExtrinsic,
+    /// ED: Dispute information.
+    pub disputes: DisputesExtrinsic,
 }
 
 /// Tickets extrinsic ET (eq 6.29).
 pub type TicketsExtrinsic = Vec<TicketProof>;
 
-/// A ticket proof: entry index + Ring VRF proof.
+/// A ticket envelope (TicketEnvelope in ASN): attempt + Ring VRF signature.
 #[derive(Clone, Debug)]
 pub struct TicketProof {
-    pub entry_index: u32,
+    /// Attempt number (U8 in ASN).
+    pub attempt: u8,
+    /// Ring VRF signature (784 bytes in ASN).
     pub proof: Vec<u8>,
 }
 
@@ -136,19 +132,21 @@ pub struct Judgment {
 }
 
 /// A culprit: a validator who guaranteed an invalid report.
+/// ASN field order: target, key, signature.
 #[derive(Clone, Debug)]
 pub struct Culprit {
-    pub validator_key: Ed25519PublicKey,
     pub report_hash: Hash,
+    pub validator_key: Ed25519PublicKey,
     pub signature: crate::Ed25519Signature,
 }
 
 /// A fault: a validator who made an incorrect judgment.
+/// ASN field order: target, vote, key, signature.
 #[derive(Clone, Debug)]
 pub struct Fault {
-    pub validator_key: Ed25519PublicKey,
     pub report_hash: Hash,
     pub is_valid: bool,
+    pub validator_key: Ed25519PublicKey,
     pub signature: crate::Ed25519Signature,
 }
 
@@ -158,13 +156,13 @@ pub type PreimagesExtrinsic = Vec<(crate::ServiceId, Vec<u8>)>;
 /// Assurances extrinsic EA (eq 11.10).
 pub type AssurancesExtrinsic = Vec<Assurance>;
 
-/// A single availability assurance.
+/// A single availability assurance (AvailAssurance in ASN).
 #[derive(Clone, Debug)]
 pub struct Assurance {
     /// Anchor (parent hash).
     pub anchor: Hash,
-    /// Bitfield: one bit per core.
-    pub bitfield: Vec<bool>,
+    /// Bitfield: raw bytes, one bit per core (fixed-size OCTET STRING in ASN).
+    pub bitfield: Vec<u8>,
     /// Validator index.
     pub validator_index: ValidatorIndex,
     /// Signature.

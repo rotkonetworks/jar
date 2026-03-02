@@ -126,21 +126,21 @@ pub fn collect_operands_for_service(
     let mut total_gas: Gas = 0;
 
     for report in reports {
-        for digest in &report.digests {
+        for digest in &report.results {
             if digest.service_id == service_id {
                 operands.push(AccumulationOperand {
-                    package_hash: report.availability.package_hash,
-                    segment_root: report.availability.segment_root,
+                    package_hash: report.package_spec.package_hash,
+                    segment_root: report.package_spec.exports_root,
                     authorizer_hash: report.authorizer_hash,
                     payload_hash: digest.payload_hash,
-                    gas_limit: digest.gas_limit,
-                    auth_trace: report.authorizer_trace.clone(),
+                    gas_limit: digest.accumulate_gas,
+                    auth_trace: report.auth_output.clone(),
                     work_result: match &digest.result {
                         grey_types::work::WorkResult::Ok(data) => AccumulationWorkResult::Ok(data.clone()),
                         _ => AccumulationWorkResult::Error,
                     },
                 });
-                total_gas = total_gas.saturating_add(digest.gas_limit);
+                total_gas = total_gas.saturating_add(digest.accumulate_gas);
             }
         }
     }
@@ -219,7 +219,7 @@ pub fn accumulate_batch(
     let mut involved: BTreeSet<ServiceId> = BTreeSet::new();
 
     for report in reports {
-        for digest in &report.digests {
+        for digest in &report.results {
             involved.insert(digest.service_id);
         }
     }
@@ -289,7 +289,7 @@ pub fn accumulate_all(
     while report_idx < available_reports.len() {
         // Calculate gas needed for this report
         let report = &available_reports[report_idx];
-        let report_gas: Gas = report.digests.iter().map(|d| d.gas_limit).sum();
+        let report_gas: Gas = report.results.iter().map(|d| d.accumulate_gas).sum();
 
         if report_gas > remaining_gas {
             break; // No more gas for additional reports
@@ -392,7 +392,7 @@ pub fn accumulated_package_hashes(reports: &[WorkReport], count: usize) -> BTree
     reports
         .iter()
         .take(count)
-        .map(|r| r.availability.package_hash)
+        .map(|r| r.package_spec.package_hash)
         .collect()
 }
 
@@ -421,12 +421,12 @@ mod tests {
 
     fn make_work_report(service_id: ServiceId, gas: Gas) -> WorkReport {
         WorkReport {
-            availability: AvailabilitySpec {
+            package_spec: AvailabilitySpec {
                 package_hash: Hash([1u8; 32]),
                 bundle_length: 0,
                 erasure_root: Hash::ZERO,
-                segment_root: Hash::ZERO,
-                segment_count: 0,
+                exports_root: Hash::ZERO,
+                exports_count: 0,
             },
             context: RefinementContext {
                 anchor: Hash::ZERO,
@@ -438,13 +438,14 @@ mod tests {
             },
             core_index: 0,
             authorizer_hash: Hash::ZERO,
-            authorizer_trace: vec![],
+            auth_gas_used: 0,
+            auth_output: vec![],
             segment_root_lookup: BTreeMap::new(),
-            digests: vec![WorkDigest {
+            results: vec![WorkDigest {
                 service_id,
                 code_hash: Hash::ZERO,
                 payload_hash: Hash::ZERO,
-                gas_limit: gas,
+                accumulate_gas: gas,
                 result: WorkResult::Ok(vec![]),
                 gas_used: gas / 2,
                 imports_count: 0,
@@ -452,7 +453,6 @@ mod tests {
                 extrinsics_size: 0,
                 exports_count: 0,
             }],
-            auth_gas_used: 0,
         }
     }
 
@@ -587,7 +587,7 @@ mod tests {
     fn test_accumulated_package_hashes() {
         let r1 = make_work_report(1, 100);
         let mut r2 = make_work_report(2, 200);
-        r2.availability.package_hash = Hash([2u8; 32]);
+        r2.package_spec.package_hash = Hash([2u8; 32]);
 
         let hashes = accumulated_package_hashes(&[r1, r2], 2);
         assert_eq!(hashes.len(), 2);

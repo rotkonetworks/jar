@@ -9,7 +9,7 @@ use crate::{BandersnatchPublicKey, BlsPublicKey, Ed25519PublicKey};
 /// - ke: Ed25519 key (bytes 32..64)
 /// - kl: BLS key (bytes 64..208)
 /// - km: Metadata (bytes 208..336)
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct ValidatorKey {
     /// kb: Bandersnatch public key for block sealing and VRF.
     pub bandersnatch: BandersnatchPublicKey,
@@ -21,6 +21,7 @@ pub struct ValidatorKey {
     pub bls: BlsPublicKey,
 
     /// km: Opaque metadata (128 bytes) including hardware address.
+    #[serde(deserialize_with = "crate::serde_utils::hex_metadata")]
     pub metadata: [u8; 128],
 }
 

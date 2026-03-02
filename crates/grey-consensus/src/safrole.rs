@@ -247,7 +247,7 @@ pub fn apply_safrole(
             let ticket_id = grey_crypto::blake2b_256(&tp.proof);
             Ticket {
                 id: ticket_id,
-                entry_index: tp.entry_index,
+                attempt: tp.attempt,
             }
         })
         .collect();
@@ -597,7 +597,7 @@ mod tests {
                     h[0..4].copy_from_slice(&i.to_le_bytes());
                     h
                 }),
-                entry_index: 0,
+                attempt: 0,
             })
             .collect();
         state.safrole.ticket_accumulator = tickets;
@@ -657,7 +657,7 @@ mod tests {
         state.timeslot = 500; // already past Y
 
         let proof = TicketProof {
-            entry_index: 0,
+            attempt: 0,
             proof: vec![1, 2, 3],
         };
 
@@ -672,11 +672,11 @@ mod tests {
 
         // Create two ticket proofs with different data so they produce different IDs
         let proof1 = TicketProof {
-            entry_index: 0,
+            attempt: 0,
             proof: vec![1],
         };
         let proof2 = TicketProof {
-            entry_index: 1,
+            attempt: 1,
             proof: vec![2],
         };
 
@@ -700,7 +700,7 @@ mod tests {
         state.timeslot = 599;
         state.safrole.ticket_accumulator = vec![Ticket {
             id: Hash([1u8; 32]),
-            entry_index: 0,
+            attempt: 0,
         }];
 
         let output = apply_safrole(&state, 600, &[0u8; 32], &[]).unwrap();
@@ -718,12 +718,12 @@ mod tests {
     #[test]
     fn test_merge_tickets_keeps_lowest() {
         let existing = vec![
-            Ticket { id: Hash([1u8; 32]), entry_index: 0 },
-            Ticket { id: Hash([3u8; 32]), entry_index: 0 },
+            Ticket { id: Hash([1u8; 32]), attempt: 0 },
+            Ticket { id: Hash([3u8; 32]), attempt: 0 },
         ];
         let new = vec![
-            Ticket { id: Hash([2u8; 32]), entry_index: 0 },
-            Ticket { id: Hash([4u8; 32]), entry_index: 0 },
+            Ticket { id: Hash([2u8; 32]), attempt: 0 },
+            Ticket { id: Hash([4u8; 32]), attempt: 0 },
         ];
 
         let result = merge_tickets(&existing, &new, 3);
