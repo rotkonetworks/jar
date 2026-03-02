@@ -8,6 +8,7 @@ use grey_types::state::{PendingReport, RecentBlockInfo, State};
 use grey_types::Hash;
 
 // Derived constants
+#[cfg(test)]
 const TOTAL_VALIDATORS_USIZE: usize = TOTAL_VALIDATORS as usize;
 const _TOTAL_CORES_USIZE: usize = TOTAL_CORES as usize;
 const REPORT_TIMEOUT: u32 = AVAILABILITY_TIMEOUT;
@@ -50,7 +51,7 @@ pub fn apply_with_config(state: &State, block: &Block, config: &Config) -> Resul
     clear_disputed_reports(&mut new_state, &extrinsic.disputes);
 
     // Step 4: Process availability assurances (Section 11.2)
-    let available_reports = process_assurances(&mut new_state, &extrinsic.assurances, header.timeslot);
+    let _available_reports = process_assurances(&mut new_state, &extrinsic.assurances, header.timeslot);
 
     // Step 5: Process work report guarantees (Section 11.4)
     process_guarantees(&mut new_state, &extrinsic.guarantees, header.timeslot)?;

@@ -238,10 +238,10 @@ fn compute_accumulatable_with_new(
 struct AccContext {
     service_id: ServiceId,
     accounts: BTreeMap<ServiceId, AccServiceAccount>,
-    next_service_id: ServiceId,
+    _next_service_id: ServiceId,
     transfers: Vec<DeferredTransfer>,
     output: Option<Hash>,
-    preimage_provisions: Vec<(ServiceId, Vec<u8>)>,
+    _preimage_provisions: Vec<(ServiceId, Vec<u8>)>,
     privileges: AccPrivileges,
 }
 
@@ -342,10 +342,10 @@ fn accumulate_single_service(
     let regular = AccContext {
         service_id,
         accounts: initial_accounts.clone(),
-        next_service_id,
+        _next_service_id: next_service_id,
         transfers: vec![],
         output: None,
-        preimage_provisions: vec![],
+        _preimage_provisions: vec![],
         privileges: privileges.clone(),
     };
     let exceptional = regular.clone();
@@ -536,10 +536,7 @@ fn run_accumulate_pvm(
     let initial_gas = pvm.gas();
 
     loop {
-        let gas_before_run = pvm.gas();
         let exit_reason = pvm.run();
-        let gas_after_run = pvm.gas();
-        eprintln!("[pvm] exit={exit_reason:?} gas_before={gas_before_run} gas_after={gas_after_run} delta={}", gas_before_run - gas_after_run);
         match exit_reason {
             ExitReason::Halt => {
                 let gas_used = initial_gas - pvm.gas();
@@ -550,7 +547,6 @@ fn run_accumulate_pvm(
                 return (exceptional, gas_used);
             }
             ExitReason::HostCall(id) => {
-                let gas_pre_host = pvm.gas();
                 let ok = handle_host_call(
                     id,
                     &mut pvm,
@@ -560,8 +556,6 @@ fn run_accumulate_pvm(
                     entropy,
                     fetch_ctx,
                 );
-                let gas_post_host = pvm.gas();
-                eprintln!("[host] id={id} ok={ok} gas_pre={gas_pre_host} gas_post={gas_post_host} host_delta={}", gas_pre_host as i64 - gas_post_host as i64);
                 if !ok {
                     let gas_used = initial_gas - pvm.gas();
                     return (exceptional, gas_used);
@@ -634,8 +628,6 @@ fn host_fetch(pvm: &mut PvmInstance, fetch_ctx: &FetchContext) -> bool {
     let max_len = pvm.reg(9);
     let mode = pvm.reg(10);
     let sub1 = pvm.reg(11) as usize;
-    eprintln!("[fetch] mode={mode} offset={offset} max_len={max_len} sub1={sub1} buf_ptr={buf_ptr}");
-
     // Select data based on mode (accumulate context: modes 0, 1, 14, 15)
     let owned_data: Option<Vec<u8>>;
     let data: Option<&[u8]> = match mode {
@@ -672,7 +664,6 @@ fn host_fetch(pvm: &mut PvmInstance, fetch_ctx: &FetchContext) -> bool {
     }
 
     // Return total length of the data
-    eprintln!("[fetch] data_len={data_len} written={l}");
     pvm.set_reg(7, data_len);
     true
 }

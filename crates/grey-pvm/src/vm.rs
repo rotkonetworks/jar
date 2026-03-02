@@ -196,10 +196,8 @@ impl Pvm {
         let category = opcode.category();
         let args = args::decode_args(&self.code, pc, skip, category);
 
-        // Per-instruction trace (PVM_TRACE_INST=1)
-        if std::env::var("PVM_TRACE_INST").is_ok() {
-            eprintln!("[inst] pc={pc} op={opcode:?} gas={}", self.gas);
-        }
+        // Per-instruction trace
+        tracing::trace!(pc, ?opcode, gas = self.gas, "pvm-inst");
 
         // Execute instruction
         self.execute(opcode, args, next_pc)
@@ -1384,40 +1382,13 @@ impl Pvm {
     /// Returns (exit_reason, gas_used).
     pub fn run(&mut self) -> (ExitReason, Gas) {
         let initial_gas = self.gas;
-        let trace = std::env::var("PVM_TRACE").is_ok();
-        let mut block_start_pc = self.pc;
-        let mut block_start_gas = self.gas;
         loop {
             match self.step() {
                 Some(exit) => {
-                    if trace {
-                        let block_cost = block_start_gas - self.gas;
-                        eprintln!(
-                            "[pvm-block] pc={block_start_pc} cost={block_cost} exit={exit:?} gas={}",
-                            self.gas
-                        );
-                    }
                     let gas_used = initial_gas - self.gas;
                     return (exit, gas_used);
                 }
-                None => {
-                    let pc = self.pc as usize;
-                    if pc < self.basic_block_starts.len()
-                        && self.basic_block_starts[pc]
-                        && self.pc != block_start_pc
-                    {
-                        if trace {
-                            let block_cost = block_start_gas - self.gas;
-                            eprintln!(
-                                "[pvm-block] pc={block_start_pc} cost={block_cost} next_pc={}",
-                                self.pc
-                            );
-                        }
-                        block_start_pc = self.pc;
-                        block_start_gas = self.gas;
-                    }
-                    continue;
-                }
+                None => continue,
             }
         }
     }

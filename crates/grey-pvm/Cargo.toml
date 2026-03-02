@@ -8,3 +8,4 @@ description = "Polkadot Virtual Machine (PVM) implementation for JAM."
 [dependencies]
 grey-types = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }

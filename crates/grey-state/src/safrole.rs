@@ -4,7 +4,7 @@
 //! seal-key series generation, and ticket accumulation.
 
 use grey_types::config::Config;
-use grey_types::header::{EpochMarker, Ticket, TicketProof};
+use grey_types::header::{Ticket, TicketProof};
 use grey_types::state::SealKeySeries;
 use grey_types::validator::ValidatorKey;
 use grey_types::{BandersnatchPublicKey, BandersnatchRingRoot, Ed25519PublicKey, Hash};
