@@ -732,10 +732,7 @@ fn host_fetch(pvm: &mut PvmInstance, fetch_ctx: &FetchContext) -> bool {
     let f = offset.min(data_len);
     let l = max_len.min(data_len - f);
 
-    // Log data hex for debugging
-    if max_len > 0 {
-        tracing::info!("  fetch mode={} data ({} bytes): {}", mode, data.len(), data.iter().map(|b| format!("{:02x}", b)).collect::<String>());
-    }
+    tracing::debug!("  fetch mode={} data_len={}", mode, data.len());
 
     // Write data[f..f+l] to memory at buf_ptr
     if l > 0 {
@@ -900,7 +897,7 @@ fn host_info(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
         buf[88..92].copy_from_slice(&account.last_accumulation_slot.to_le_bytes()); // a_a
         buf[92..96].copy_from_slice(&account.parent_service.to_le_bytes()); // a_p
 
-        tracing::info!("  info struct ({} bytes): {}", buf.len(), buf.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+        tracing::debug!("  info struct for svc {}: {} bytes", ctx.service_id, buf.len());
 
         let v_len = buf.len() as u64;
         let f = offset.min(v_len);
@@ -1189,11 +1186,22 @@ pub fn process_accumulate(
 
     // Step 1: Partition input reports into immediate and queued
     let (immediate, new_queued) = partition_reports(&input.reports);
+
+    // Step 1b: Compute ⊜(ξ) — union of all accumulated package hashes (eq 12.5).
+    // R^Q ≡ E([D(r) | ...], ⊜(ξ)) — new queued reports must have
+    // already-accumulated dependencies stripped via the full history.
+    let accumulated_union: BTreeSet<Hash> = state
+        .accumulated
+        .iter()
+        .flat_map(|slot_hashes| slot_hashes.iter().cloned())
+        .collect();
+    let edited_new_queued = edit_queue(&new_queued, &accumulated_union);
+
     // Step 2: Compute R* (all accumulatable reports)
     let accumulatable = compute_accumulatable_with_new(
         &immediate,
         &state.ready_queue,
-        &new_queued,
+        &edited_new_queued,
         epoch_length,
         slot_index,
     );
@@ -1257,7 +1265,7 @@ pub fn process_accumulate(
 
     update_ready_queue(
         &mut state.ready_queue,
-        &new_queued,
+        &edited_new_queued,
         &accumulated_hashes,
         epoch_length,
         state.slot,
@@ -1574,22 +1582,10 @@ pub fn run_accumulation(
 ) -> (Hash, Vec<(ServiceId, Gas)>) {
     let epoch_length = config.epoch_length as usize;
 
-    tracing::info!(
+    tracing::debug!(
         "run_accumulation: {} available reports, timeslot={}, prev={}",
         available_reports.len(), state.timeslot, prev_timeslot
     );
-    for (i, r) in available_reports.iter().enumerate() {
-        tracing::info!(
-            "  report[{}]: core={}, results={}, pkg_hash={}",
-            i, r.core_index, r.results.len(), r.package_spec.package_hash
-        );
-        for (j, d) in r.results.iter().enumerate() {
-            tracing::info!(
-                "    digest[{}]: svc={}, acc_gas={}, code_hash={}",
-                j, d.service_id, d.accumulate_gas, d.code_hash
-            );
-        }
-    }
 
     if available_reports.is_empty() {
         // Still need to shift history and queue for this timeslot
@@ -1616,15 +1612,6 @@ pub fn run_accumulation(
     }
 
     // Build AccumulateState from main State
-    tracing::info!("  services in state: {:?}", state.services.keys().collect::<Vec<_>>());
-    for (&sid, acc) in &state.services {
-        let has_code = acc.preimage_lookup.contains_key(&acc.code_hash);
-        tracing::info!(
-            "  service {}: code_hash={}, has_code={}, balance={}, storage_keys={}",
-            sid, acc.code_hash, has_code, acc.balance, acc.storage.len()
-        );
-    }
-
     let mut acc_state = AccumulateState {
         slot: prev_timeslot,
         entropy: state.entropy[0],
@@ -1644,26 +1631,8 @@ pub fn run_accumulation(
         reports: available_reports,
     };
 
-    // Log service account before accumulation for debugging
-    for (&sid, acc) in &acc_state.accounts {
-        tracing::debug!(
-            "  pre-acc svc {}: balance={}, items={}, bytes={}, last_acc={}, preimages={}",
-            sid, acc.balance, acc.items, acc.bytes, acc.last_accumulation_slot,
-            acc.preimage_lookup.len()
-        );
-    }
-
     let acc_output = process_accumulate(config, &mut acc_state, &input);
-    tracing::info!("  accumulate output_hash: {}", acc_output.hash);
-
-    // Log service account after accumulation for debugging
-    for (&sid, acc) in &acc_state.accounts {
-        tracing::debug!(
-            "  post-acc svc {}: balance={}, items={}, bytes={}, last_acc={}, preimages={}, storage={}",
-            sid, acc.balance, acc.items, acc.bytes, acc.last_accumulation_slot,
-            acc.preimage_lookup.len(), acc.storage.len()
-        );
-    }
+    tracing::debug!("  accumulate output_hash: {}", acc_output.hash);
 
     // Build set of accumulated service IDs from gas_usage
     let accumulated_sids: std::collections::BTreeSet<ServiceId> =
@@ -1678,29 +1647,6 @@ pub fn run_accumulation(
             (sid, acc_to_service(a, state.services.get(&sid), was_accumulated, state.timeslot))
         })
         .collect();
-
-    // Log changes to service accounts
-    for (&sid, new_acc) in &new_services {
-        if let Some(old_acc) = state.services.get(&sid) {
-            // Serialize both and compare
-            let old_bytes = grey_merkle::state_serial::serialize_single_service(old_acc);
-            let new_bytes = grey_merkle::state_serial::serialize_single_service(new_acc);
-            if old_bytes != new_bytes {
-                tracing::info!("  svc {} account changed: {} -> {} bytes", sid, old_bytes.len(), new_bytes.len());
-                let hex = |b: &[u8]| -> String { b.iter().map(|x| format!("{:02x}", x)).collect() };
-                tracing::info!("    old: {}", hex(&old_bytes));
-                tracing::info!("    new: {}", hex(&new_bytes));
-            }
-            if old_acc.preimage_lookup.len() != new_acc.preimage_lookup.len() {
-                tracing::info!("  svc {} preimage_lookup: {} -> {} entries", sid, old_acc.preimage_lookup.len(), new_acc.preimage_lookup.len());
-            }
-            if old_acc.storage.len() != new_acc.storage.len() {
-                tracing::info!("  svc {} storage: {} -> {} keys", sid, old_acc.storage.len(), new_acc.storage.len());
-            }
-        } else {
-            tracing::info!("  NEW service {}", sid);
-        }
-    }
 
     state.services = new_services;
     state.accumulation_history = acc_state.accumulated;
