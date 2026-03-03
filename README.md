@@ -36,18 +36,24 @@ cargo build
 
 Grey includes a conformance target binary (`grey-conform`) that speaks the JAM fuzz-proto v1 protocol over Unix domain sockets, compatible with [minifuzz](https://github.com/davxy/jam-conformance), Polkajam, and Jamzig fuzzers.
 
-**Status**: 8 of 100 blocks passing on the `0.7.2/no_forks` trace (blocks 1–8). Block 9 fails in the third accumulation (host-call issue under investigation).
+**Status**: 8 of 100 blocks passing on the `0.7.2/no_forks` trace (blocks 1–8). Block 9 fails with a state root mismatch (accumulation side-effects under investigation).
 
 ```bash
-# Build
-cargo build --release --bin grey-conform
+# Quick test: replay trace and show pass/fail per block
+python3 scripts/run_conform.py
 
-# Run against minifuzz
+# Dump state at a specific block for debugging
+python3 scripts/dump_state.py --block 8
+
+# Run against minifuzz directly
+cargo build --release --bin grey-conform
 ./target/release/grey-conform /tmp/jam_target.sock &
 python res/conformance/minifuzz/minifuzz.py \
   -d res/conformance/fuzz-proto/examples/0.7.2/no_forks \
   --target-sock /tmp/jam_target.sock
 ```
+
+See [docs/conformance-testing.md](docs/conformance-testing.md) for the full debugging guide, protocol details, and script reference.
 
 ### Known Spec Issues
 
