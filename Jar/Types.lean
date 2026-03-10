@@ -1,11 +1,20 @@
-/-!
-# Core Types — §3–4
+import Jar.Types.Constants
+import Jar.Types.Numerics
+import Jar.Types.Validators
+import Jar.Types.Work
+import Jar.Types.Accounts
+import Jar.Types.Header
+import Jar.Types.State
 
-Gray Paper type universe:
-- Bounded naturals: `N_B`, `N_G`, `N_S`, `N_T`, `N_R` (§3.4, §4.7)
-- Octet strings: `B_n`, `H` (§3.5.3, §3.8)
-- Sequences `⟦T⟧_n`, dictionaries `⟨K→V⟩`, optionals `T?` (§3.5, §3.3)
-- Protocol constants: V, C, E, P, … (Appendix I.4.4)
-- Header `H`, Block `B`, Extrinsic `E`, State `σ` (§4, §5)
-- Validator keys, work reports, service accounts (§6, §9, §11)
+/-!
+# Core Types — Gray Paper §3–4, §5–6, §9–14
+
+The complete Gray Paper type universe, organized into sub-modules:
+- `Types.Constants`  — Protocol constants (Appendix I.4.4)
+- `Types.Numerics`   — Bounded numeric types (§3.4, §4.6–4.7)
+- `Types.Validators`  — Validator keys, tickets, Safrole state (§6)
+- `Types.Work`       — Work reports, digests, packages (§11, §14)
+- `Types.Accounts`   — Service accounts, privileged services (§9, §12)
+- `Types.Header`     — Block, Header, Extrinsic (§4–5)
+- `Types.State`      — Complete chain state σ (§4.2)
 -/
