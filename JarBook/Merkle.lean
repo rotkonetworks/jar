@@ -2,6 +2,7 @@ import VersoManual
 import Jar.Merkle
 
 open Verso.Genre Manual
+open Jar.Merkle
 
 set_option verso.docstring.allowMissing true
 
@@ -19,8 +20,6 @@ used for state commitment and availability (GP Appendix D).
 {docstring Jar.Merkle.encodeLeaf}
 
 # State Trie
-
-{docstring Jar.Merkle.BitKey}
 
 {docstring Jar.Merkle.trieRoot}
 

@@ -2,6 +2,7 @@ import VersoManual
 import Jar.Crypto
 
 open Verso.Genre Manual
+open Jar.Crypto
 
 set_option verso.docstring.allowMissing true
 

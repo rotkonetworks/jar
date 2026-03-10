@@ -2,6 +2,7 @@ import VersoManual
 import Jar.Consensus
 
 open Verso.Genre Manual
+open Jar.Consensus
 
 set_option verso.docstring.allowMissing true
 
@@ -12,28 +13,28 @@ consensus protocol (GP §6).
 
 # Block Sealing
 
-{docstring Jar.outsideInSequencer}
+{docstring Jar.Consensus.outsideInSequencer}
 
-{docstring Jar.fallbackKeySequence}
+{docstring Jar.Consensus.fallbackKeySequence}
 
-{docstring Jar.verifySealTicketed}
+{docstring Jar.Consensus.verifySealTicketed}
 
-{docstring Jar.verifySealFallback}
+{docstring Jar.Consensus.verifySealFallback}
 
-{docstring Jar.verifyEntropyVrf}
+{docstring Jar.Consensus.verifyEntropyVrf}
 
 # Ticket Accumulation
 
-{docstring Jar.verifyTicketProof}
+{docstring Jar.Consensus.verifyTicketProof}
 
-{docstring Jar.accumulateTickets}
+{docstring Jar.Consensus.accumulateTickets}
 
 # State Update
 
-{docstring Jar.updateSafrole}
+{docstring Jar.Consensus.updateSafrole}
 
 # Chain Selection
 
-{docstring Jar.chainMetric}
+{docstring Jar.Consensus.chainMetric}
 
-{docstring Jar.isAcceptable}
+{docstring Jar.Consensus.isAcceptable}

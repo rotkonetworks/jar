@@ -2,6 +2,7 @@ import VersoManual
 import Jar.Accumulation
 
 open Verso.Genre Manual
+open Jar.Accumulation
 
 set_option verso.docstring.allowMissing true
 
@@ -14,13 +15,13 @@ via PVM execution with 27 host calls.
 
 # Data Types
 
-{docstring Jar.OperandTuple}
+{docstring Jar.Accumulation.OperandTuple}
 
-{docstring Jar.PartialState}
+{docstring Jar.Accumulation.PartialState}
 
-{docstring Jar.AccOneOutput}
+{docstring Jar.Accumulation.AccOneOutput}
 
-{docstring Jar.AccContext}
+{docstring Jar.Accumulation.AccContext}
 
 # Host Calls (§12.4)
 
@@ -29,26 +30,24 @@ Each host call costs a base gas of 10. Operations include reading/writing
 service storage, transferring balance, managing preimages, and creating
 or upgrading services.
 
-{docstring Jar.handleHostCall}
+{docstring Jar.Accumulation.handleHostCall}
 
 # Single-Service Accumulation
 
-{docstring Jar.encodeAccArgs}
-
-{docstring Jar.accone}
+{docstring Jar.Accumulation.accone}
 
 # Pipeline
 
-{docstring Jar.groupByService}
+{docstring Jar.Accumulation.groupByService}
 
-{docstring Jar.groupTransfersByDest}
+{docstring Jar.Accumulation.groupTransfersByDest}
 
-{docstring Jar.accpar}
+{docstring Jar.Accumulation.accpar}
 
-{docstring Jar.accseq}
+{docstring Jar.Accumulation.accseq}
 
 # Block-Level Accumulation
 
-{docstring Jar.AccumulationResult}
+{docstring Jar.Accumulation.AccumulationResult}
 
-{docstring Jar.accumulate}
+{docstring Jar.Accumulation.accumulate}

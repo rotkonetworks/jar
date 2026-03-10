@@ -2,6 +2,7 @@ import VersoManual
 import Jar.Codec
 
 open Verso.Genre Manual
+open Jar.Codec
 
 set_option verso.docstring.allowMissing true
 
@@ -12,52 +13,52 @@ All encodings are little-endian.
 
 # Primitive Encoders
 
-{docstring Jar.encodeFixedNat}
+{docstring Jar.Codec.encodeFixedNat}
 
-{docstring Jar.decodeFixedNat}
+{docstring Jar.Codec.decodeFixedNat}
 
-{docstring Jar.encodeNat}
+{docstring Jar.Codec.encodeNat}
 
-{docstring Jar.encodeOption}
+{docstring Jar.Codec.encodeOption}
 
-{docstring Jar.encodeLengthPrefixed}
+{docstring Jar.Codec.encodeLengthPrefixed}
 
-{docstring Jar.encodeBits}
+{docstring Jar.Codec.encodeBits}
 
 # Work Types
 
-{docstring Jar.encodeWorkResult}
+{docstring Jar.Codec.encodeWorkResult}
 
-{docstring Jar.encodeAvailSpec}
+{docstring Jar.Codec.encodeAvailSpec}
 
-{docstring Jar.encodeRefinementContext}
+{docstring Jar.Codec.encodeRefinementContext}
 
-{docstring Jar.encodeWorkDigest}
+{docstring Jar.Codec.encodeWorkDigest}
 
-{docstring Jar.encodeWorkReport}
+{docstring Jar.Codec.encodeWorkReport}
 
 # Extrinsic Encoders
 
-{docstring Jar.encodeTicket}
+{docstring Jar.Codec.encodeTicket}
 
-{docstring Jar.encodeTicketProof}
+{docstring Jar.Codec.encodeTicketProof}
 
-{docstring Jar.encodeAssurance}
+{docstring Jar.Codec.encodeAssurance}
 
-{docstring Jar.encodeGuarantee}
+{docstring Jar.Codec.encodeGuarantee}
 
-{docstring Jar.encodeDisputes}
+{docstring Jar.Codec.encodeDisputes}
 
-{docstring Jar.encodePreimages}
+{docstring Jar.Codec.encodePreimages}
 
 # Block Encoding
 
-{docstring Jar.encodeEpochMarker}
+{docstring Jar.Codec.encodeEpochMarker}
 
-{docstring Jar.encodeUnsignedHeader}
+{docstring Jar.Codec.encodeUnsignedHeader}
 
-{docstring Jar.encodeHeader}
+{docstring Jar.Codec.encodeHeader}
 
-{docstring Jar.encodeExtrinsic}
+{docstring Jar.Codec.encodeExtrinsic}
 
-{docstring Jar.encodeBlock}
+{docstring Jar.Codec.encodeBlock}

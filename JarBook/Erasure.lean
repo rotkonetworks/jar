@@ -2,6 +2,7 @@ import VersoManual
 import Jar.Erasure
 
 open Verso.Genre Manual
+open Jar.Erasure
 
 set_option verso.docstring.allowMissing true
 
