@@ -3,6 +3,16 @@
 //! Two workloads:
 //!   - fib: compute-intensive iterative Fibonacci (1M iterations)
 //!   - hostcall: host-call-heavy (100K ecalli invocations)
+//!
+//! ## Benchmark fairness
+//!
+//! Both grey and polkavm recompiler benchmarks include compilation + execution in
+//! each iteration. This is the realistic scenario for JAM: each work-package
+//! arrives as a blob that must be compiled and executed. Caching compiled code
+//! across invocations is a separate optimization.
+//!
+//! The interpreter benchmarks also re-parse the blob each iteration for the same
+//! reason.
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use grey_bench::*;
@@ -10,7 +20,7 @@ use grey_bench::*;
 const GAS_LIMIT: u64 = 100_000_000;
 
 // ---------------------------------------------------------------------------
-// Grey-PVM interpreter runner
+// Grey-PVM interpreter runner (parse + execute)
 // ---------------------------------------------------------------------------
 
 fn run_grey_interpreter(blob: &[u8]) -> (u64, u64) {
@@ -29,7 +39,7 @@ fn run_grey_interpreter(blob: &[u8]) -> (u64, u64) {
 }
 
 // ---------------------------------------------------------------------------
-// Grey-PVM recompiler runner
+// Grey-PVM recompiler runner (compile + execute)
 // ---------------------------------------------------------------------------
 
 fn run_grey_recompiler(blob: &[u8]) -> (u64, u64) {
@@ -51,15 +61,27 @@ fn run_grey_recompiler(blob: &[u8]) -> (u64, u64) {
 // PolkaVM runners
 // ---------------------------------------------------------------------------
 
-use polkavm::{BackendKind, Config, Engine, GasMeteringKind, InterruptKind, Module, ModuleConfig};
+use polkavm::{BackendKind, Config, Engine, GasMeteringKind, InterruptKind, Module, ModuleConfig, SandboxKind};
 use polkavm_common::program::Reg as PReg;
 
-fn try_make_polkavm_module(blob: &[u8], backend: BackendKind) -> Option<(Engine, Module)> {
+fn polkavm_config(backend: BackendKind) -> Config {
     let mut config = Config::new();
     config.set_backend(Some(backend));
     config.set_allow_experimental(true);
     config.set_sandboxing_enabled(false);
-    let engine = Engine::new(&config).ok()?;
+    config.set_sandbox(Some(SandboxKind::Generic));
+    config
+}
+
+fn try_make_polkavm_module(blob: &[u8], backend: BackendKind) -> Option<(Engine, Module)> {
+    let config = polkavm_config(backend);
+    let engine = match Engine::new(&config) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("polkavm Engine::new({backend:?}) failed: {e}");
+            return None;
+        }
+    };
 
     let mut mc = ModuleConfig::new();
     mc.set_gas_metering(Some(GasMeteringKind::Sync));
@@ -67,6 +89,7 @@ fn try_make_polkavm_module(blob: &[u8], backend: BackendKind) -> Option<(Engine,
     Some((engine, module))
 }
 
+/// Execute an already-compiled polkavm module (execution only, no compilation).
 fn run_polkavm_module(module: &Module) -> (u64, i64) {
     let mut inst = module.instantiate().unwrap();
     inst.set_gas(GAS_LIMIT as i64);
@@ -84,6 +107,14 @@ fn run_polkavm_module(module: &Module) -> (u64, i64) {
         }
     }
     (inst.reg(PReg::A0), inst.gas())
+}
+
+/// Compile + execute a polkavm blob from scratch (full pipeline, fair comparison).
+fn run_polkavm_compile_and_run(blob: &[u8], engine: &Engine) -> (u64, i64) {
+    let mut mc = ModuleConfig::new();
+    mc.set_gas_metering(Some(GasMeteringKind::Sync));
+    let module = Module::new(engine, &mc, blob.to_vec().into()).unwrap();
+    run_polkavm_module(&module)
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +153,8 @@ fn bench_fib(c: &mut Criterion) {
 
     let (_, pvm_interp_mod) = try_make_polkavm_module(&pvm_blob, BackendKind::Interpreter)
         .expect("polkavm interpreter should always work");
-    let pvm_compiler_mod = try_make_polkavm_module(&pvm_blob, BackendKind::Compiler);
-    if pvm_compiler_mod.is_none() {
+    let pvm_compiler = try_make_polkavm_module(&pvm_blob, BackendKind::Compiler);
+    if pvm_compiler.is_none() {
         eprintln!("polkavm compiler backend unavailable (sandbox/platform restriction), skipping");
     }
 
@@ -141,9 +172,14 @@ fn bench_fib(c: &mut Criterion) {
         b.iter(|| run_polkavm_module(&pvm_interp_mod))
     });
 
-    if let Some((_, ref pvm_mod)) = pvm_compiler_mod {
-        group.bench_function("polkavm-compiler", |b| {
+    if let Some((ref engine, ref pvm_mod)) = pvm_compiler {
+        // Execution-only (pre-compiled module, amortized compilation cost)
+        group.bench_function("polkavm-compiler-exec", |b| {
             b.iter(|| run_polkavm_module(pvm_mod))
+        });
+        // Compile + execute (fair comparison with grey-recompiler)
+        group.bench_function("polkavm-compiler-full", |b| {
+            b.iter(|| run_polkavm_compile_and_run(&pvm_blob, engine))
         });
     }
 
@@ -158,7 +194,7 @@ fn bench_hostcall(c: &mut Criterion) {
 
     let (_, pvm_interp_mod) = try_make_polkavm_module(&pvm_blob, BackendKind::Interpreter)
         .expect("polkavm interpreter should always work");
-    let pvm_compiler_mod = try_make_polkavm_module(&pvm_blob, BackendKind::Compiler);
+    let pvm_compiler = try_make_polkavm_module(&pvm_blob, BackendKind::Compiler);
 
     let mut group = c.benchmark_group("hostcall");
 
@@ -174,9 +210,12 @@ fn bench_hostcall(c: &mut Criterion) {
         b.iter(|| run_polkavm_module(&pvm_interp_mod))
     });
 
-    if let Some((_, ref pvm_mod)) = pvm_compiler_mod {
-        group.bench_function("polkavm-compiler", |b| {
+    if let Some((ref engine, ref pvm_mod)) = pvm_compiler {
+        group.bench_function("polkavm-compiler-exec", |b| {
             b.iter(|| run_polkavm_module(pvm_mod))
+        });
+        group.bench_function("polkavm-compiler-full", |b| {
+            b.iter(|| run_polkavm_compile_and_run(&pvm_blob, engine))
         });
     }
 

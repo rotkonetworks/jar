@@ -332,10 +332,13 @@ impl RecompiledPvm {
     ) -> Result<Self, String> {
         let debug = std::env::var("GREY_PVM_DEBUG").is_ok();
 
-        // For the recompiler, treat every instruction start as a basic block start.
-        // This allows re-entry at any PC (e.g., PC=5 for accumulate, PC=10 for on-transfer).
-        // The cost is slightly more frequent gas checks (per-instruction rather than per-block).
+        // Every instruction start is a valid entry point (for dispatch table / re-entry
+        // at arbitrary PCs, e.g., PC=5 for accumulate, PC=10 for on-transfer).
         let basic_block_starts: Vec<bool> = bitmask.iter().map(|&b| b == 1).collect();
+
+        // Compute actual control-flow basic blocks for gas metering.
+        // This is much coarser than per-instruction, reducing gas check overhead.
+        let gas_block_starts = codegen::compute_gas_blocks(&code, &bitmask);
 
         // Allocate memory on the heap so we have a stable pointer
         let memory = Box::new(memory);
@@ -388,6 +391,7 @@ impl RecompiledPvm {
             basic_block_starts.clone(),
             jump_table.clone(),
             helpers,
+            gas_block_starts,
         );
         let (native, dispatch_table) = compiler.compile(&code, &bitmask);
 

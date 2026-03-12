@@ -9,7 +9,7 @@ description = "PVM benchmarks: grey interpreter vs recompiler vs polkavm"
 grey-pvm = { workspace = true }
 grey-types = { workspace = true }
 grey-transpiler = { workspace = true }
-polkavm = "0.30.0"
+polkavm = { version = "0.30.0", features = ["generic-sandbox"] }
 polkavm-common = "0.30.0"
 
 [dev-dependencies]

@@ -104,8 +104,10 @@ pub struct Compiler {
     panic_label: Label,
     /// Helper function addresses.
     helpers: HelperFns,
-    /// Basic block starts from PVM.
+    /// Entry points: every instruction start (for dispatch table / re-entry).
     basic_block_starts: Vec<bool>,
+    /// Gas block starts: actual control-flow basic block boundaries (for gas metering).
+    gas_block_starts: Vec<bool>,
     /// Jump table.
     jump_table: Vec<u32>,
 }
@@ -115,6 +117,7 @@ impl Compiler {
         basic_block_starts: Vec<bool>,
         jump_table: Vec<u32>,
         helpers: HelperFns,
+        gas_block_starts: Vec<bool>,
     ) -> Self {
         let mut asm = Assembler::new();
         let exit_label = asm.new_label();
@@ -128,6 +131,7 @@ impl Compiler {
             panic_label,
             helpers,
             basic_block_starts,
+            gas_block_starts,
             jump_table,
         }
     }
@@ -177,9 +181,9 @@ impl Compiler {
                 self.asm.bind_label(label);
             }
 
-            // Gas metering at basic block starts
-            if self.is_basic_block_start(pc as u32) {
-                // Track current PC for debugging (so panic reports correct location)
+            // Gas metering at gas-block boundaries (actual control flow, not per-instruction)
+            let is_gas_block = (pc < self.gas_block_starts.len()) && self.gas_block_starts[pc];
+            if is_gas_block {
                 self.asm.mov_store32_imm(CTX, CTX_PC as i32, pc as i32);
                 self.emit_gas_check(pc, code, bitmask);
             }
@@ -1644,19 +1648,16 @@ impl Compiler {
         self.asm.mov_rr(REG_MAP[rd], SCRATCH);
     }
 
-    /// Emit gas check at basic block start.
+    /// Emit gas check at gas-block start.
     fn emit_gas_check(&mut self, pc: usize, code: &[u8], bitmask: &[u8]) {
-        // Count instructions in this block
-        let cost = compute_block_cost(pc, code, bitmask);
+        // Count instructions in this gas block (until next gas block or terminator)
+        let cost = compute_gas_block_cost(pc, code, bitmask, &self.gas_block_starts);
         if cost == 0 { return; }
 
-        // sub qword [r15 + CTX_GAS], cost
-        self.asm.mov_load64(SCRATCH, CTX, CTX_GAS);
-        self.asm.sub_ri(SCRATCH, cost as i32);
-        self.asm.mov_store64(CTX, CTX_GAS, SCRATCH);
-        // If gas < 0, exit with OOG
-        self.asm.cmp_ri(SCRATCH, 0);
-        self.asm.jcc_label(Cc::L, self.oog_label);
+        // sub qword [r15 + CTX_GAS], cost  — sets SF if result < 0
+        // js oog_label
+        self.asm.sub_mem64_imm32(CTX, CTX_GAS, cost as i32);
+        self.asm.jcc_label(Cc::S, self.oog_label);
     }
 
     /// Emit an exit sequence that sets exit_reason and exit_arg.
@@ -1764,6 +1765,75 @@ impl Compiler {
     }
 }
 
+/// Compute actual control-flow basic block boundaries from the instruction stream.
+/// Returns a Vec<bool> where `true` marks a gas-block start (branch target, fallthrough
+/// after terminator, ecalli re-entry point, or PC=0).
+pub fn compute_gas_blocks(code: &[u8], bitmask: &[u8]) -> Vec<bool> {
+    let mut gas_starts = vec![false; code.len()];
+
+    // PC=0 is always a block start
+    if !code.is_empty() {
+        gas_starts[0] = true;
+    }
+
+    let mut pc: usize = 0;
+    while pc < code.len() {
+        if pc < bitmask.len() && bitmask[pc] != 1 {
+            pc += 1;
+            continue;
+        }
+
+        let opcode = Opcode::from_byte(code[pc]);
+        let skip = compute_skip(pc, bitmask);
+        let next_pc = pc + 1 + skip;
+
+        if let Some(op) = opcode {
+            // Extract branch/jump targets
+            let category = op.category();
+            let args = crate::args::decode_args(code, pc, skip, category);
+
+            match args {
+                Args::Offset { offset } => {
+                    // Jump target
+                    let target = offset as usize;
+                    if target < code.len() {
+                        gas_starts[target] = true;
+                    }
+                }
+                Args::RegImmOffset { offset, .. } => {
+                    // Branch target (conditional)
+                    let target = offset as usize;
+                    if target < code.len() {
+                        gas_starts[target] = true;
+                    }
+                }
+                Args::TwoRegOffset { offset, .. } => {
+                    // Branch target (conditional, two-reg)
+                    let target = offset as usize;
+                    if target < code.len() {
+                        gas_starts[target] = true;
+                    }
+                }
+                _ => {}
+            }
+
+            // Fallthrough after terminators is a new block
+            if op.is_terminator() && next_pc < code.len() {
+                gas_starts[next_pc] = true;
+            }
+
+            // Ecalli: the next instruction is a re-entry point
+            if matches!(op, Opcode::Ecalli) && next_pc < code.len() {
+                gas_starts[next_pc] = true;
+            }
+        }
+
+        pc = next_pc;
+    }
+
+    gas_starts
+}
+
 /// Compute skip(i) — distance to next instruction start.
 fn compute_skip(pc: usize, bitmask: &[u8]) -> usize {
     for j in 0..25 {
@@ -1776,9 +1846,9 @@ fn compute_skip(pc: usize, bitmask: &[u8]) -> usize {
     24
 }
 
-/// Compute gas cost for a basic block starting at `pc`.
-/// Each instruction costs 1 gas. Count until we hit a terminator or the next basic block.
-fn compute_block_cost(pc: usize, code: &[u8], bitmask: &[u8]) -> u32 {
+/// Compute gas cost for a gas block starting at `pc`.
+/// Each instruction costs 1 gas. Count until we hit a terminator or the next gas block.
+fn compute_gas_block_cost(pc: usize, code: &[u8], bitmask: &[u8], gas_starts: &[bool]) -> u32 {
     let mut cost = 0u32;
     let mut pos = pc;
     loop {
@@ -1797,8 +1867,8 @@ fn compute_block_cost(pc: usize, code: &[u8], bitmask: &[u8]) -> u32 {
                 break;
             }
         }
-        // Stop if next position is a new basic block start (and not the first instruction)
-        if cost > 0 && pos < bitmask.len() && bitmask[pos] == 1 {
+        // Stop if next position is a gas block start
+        if pos < gas_starts.len() && gas_starts[pos] {
             break;
         }
     }
