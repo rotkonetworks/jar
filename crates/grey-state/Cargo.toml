@@ -13,10 +13,10 @@ grey-pvm = { workspace = true }
 grey-merkle = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-hex = { workspace = true }
 tracing = { workspace = true }
 tracing-test = { workspace = true }
