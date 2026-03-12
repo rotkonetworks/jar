@@ -396,6 +396,27 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                             &mut collected_assurances,
                         );
                     }
+                    NetworkEvent::ChunkRequest { report_hash, chunk_index, response_tx } => {
+                        let hash = grey_types::Hash(report_hash);
+                        let chunk = store.get_chunk(&hash, chunk_index).ok();
+                        let _ = response_tx.send(chunk);
+                    }
+                    NetworkEvent::BlockRequest { block_hash, response_tx } => {
+                        let hash = grey_types::Hash(block_hash);
+                        // Return encoded block if we have it
+                        let block_data = store.get_block(&hash).ok().map(|block| {
+                            encode_block_message(&block, &hash)
+                        });
+                        let _ = response_tx.send(block_data);
+                    }
+                    NetworkEvent::PeerIdentified { peer_id, validator_index: vi } => {
+                        tracing::info!(
+                            "Validator {} peer identified: {} (validator={:?})",
+                            config.validator_index,
+                            peer_id,
+                            vi
+                        );
+                    }
                 }
             }
 
