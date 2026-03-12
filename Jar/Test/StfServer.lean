@@ -165,8 +165,38 @@ def runSubTransition (name : String) (json : Json) : IO Json :=
   | "accumulate" => runAccumulate json
   | other => throw (IO.userError s!"unknown sub-transition: {other}\nSupported: {allTransitions}")
 
+private def blessFile (subTransition : String) (path : System.FilePath) : IO Unit := do
+  let content ← IO.FS.readFile path
+  let json ← IO.ofExcept (Json.parse content)
+  -- Run transition on pre_state + input
+  let result ← runSubTransition subTransition json
+  -- Merge computed output/post_state back into original JSON
+  let outputVal ← IO.ofExcept (result.getObjVal? "output")
+  let postStateVal ← IO.ofExcept (result.getObjVal? "post_state")
+  let preState ← IO.ofExcept (json.getObjVal? "pre_state")
+  let input ← IO.ofExcept (json.getObjVal? "input")
+  let merged := Json.mkObj [
+    ("pre_state", preState),
+    ("input", input),
+    ("output", outputVal),
+    ("post_state", postStateVal)]
+  IO.FS.writeFile path (merged.pretty ++ "\n")
+  IO.println s!"  blessed: {path.fileName.getD (toString path)}"
+
+private def blessDir (subTransition : String) (dir : System.FilePath) : IO UInt32 := do
+  let entries ← dir.readDir
+  let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".json")
+  let sorted := jsonFiles.qsort (fun a b => a.fileName < b.fileName)
+  IO.println s!"Blessing {sorted.size} test vectors in: {dir}"
+  for entry in sorted do
+    blessFile subTransition entry.path
+  IO.println s!"Done: {sorted.size} files blessed."
+  return 0
+
 def main (args : List String) : IO UInt32 := do
   match args with
+  | ["--bless", subTransition, dir] =>
+    blessDir subTransition dir
   | [subTransition, inputPath] =>
     let content ← IO.FS.readFile inputPath
     let json ← IO.ofExcept (Json.parse content)
@@ -175,6 +205,7 @@ def main (args : List String) : IO UInt32 := do
     return 0
   | _ =>
     IO.eprintln "Usage: jar-stf <sub-transition> <input.json>"
+    IO.eprintln "       jar-stf --bless <sub-transition> <dir>"
     IO.eprintln s!"Supported sub-transitions: {allTransitions}"
     return 1
 

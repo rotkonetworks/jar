@@ -45,60 +45,6 @@ lean_exe cryptotest where
     "-lpthread", "-ldl", "-lm"
   ]
 
-lean_exe safroletest where
-  root := `Jar.Test.SafroleVectors
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe statisticstest where
-  root := `Jar.Test.StatisticsVectors
-
-lean_exe authorizationstest where
-  root := `Jar.Test.AuthorizationsVectors
-
-lean_exe historytest where
-  root := `Jar.Test.HistoryVectors
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe disputestest where
-  root := `Jar.Test.DisputesVectors
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe assurancestest where
-  root := `Jar.Test.AssurancesVectors
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe preimagestest where
-  root := `Jar.Test.PreimagesVectors
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe reportstest where
-  root := `Jar.Test.ReportsVectors
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
 lean_exe safrolejsontest where
   root := `Jar.Test.SafroleJsonMain
   moreLinkArgs := #[
@@ -147,14 +93,6 @@ lean_exe assurancesjsontest where
 
 lean_exe reportsjsontest where
   root := `Jar.Test.ReportsJsonMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe accumulatetest where
-  root := `Jar.Test.AccumulateVectors
   moreLinkArgs := #[
     "-L", "crypto-ffi/target/release",
     "-ljar_crypto_ffi",
