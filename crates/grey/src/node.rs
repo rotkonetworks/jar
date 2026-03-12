@@ -8,6 +8,7 @@
 //! 5. Propagate blocks via the network
 //! 6. Process work packages and generate guarantees/assurances
 
+use crate::audit::{self, AuditState};
 use crate::guarantor::{self, GuarantorState};
 use grey_codec::header_codec::compute_header_hash;
 use grey_consensus::authoring;
@@ -145,6 +146,8 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
     let mut guarantor_state = GuarantorState::new();
     // Collected assurances from peers for block inclusion
     let mut collected_assurances: Vec<Assurance> = Vec::new();
+    // Audit state: tranche-based audit of guaranteed work reports
+    let mut audit_state = AuditState::new();
 
     tracing::info!(
         "Validator {} node started, genesis_time={}",
@@ -272,6 +275,26 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                     hex::encode(&header_hash.0[..8])
                                 );
 
+                                // Register guarantees from this block for auditing
+                                for guarantee in &block.extrinsic.guarantees {
+                                    let report_hash = grey_crypto::blake2b_256(
+                                        &grey_codec::header_codec::encode_header(&block.header),
+                                    );
+                                    let our_tranche = audit::compute_audit_tranche(
+                                        &state.entropy[0],
+                                        &report_hash,
+                                        config.validator_index,
+                                        30,
+                                    );
+                                    audit_state.add_pending(
+                                        report_hash,
+                                        guarantee.report.clone(),
+                                        guarantee.report.core_index,
+                                        current_slot,
+                                        Some(our_tranche),
+                                    );
+                                }
+
                                 // Broadcast block
                                 let block_data = encode_block_message(&block, &header_hash);
                                 let _ = net_commands.send(NetworkCommand::BroadcastBlock {
@@ -301,6 +324,60 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                         }
                     }
                 }
+
+                // Process due audits on each tick
+                let pending_hashes: Vec<grey_types::Hash> = audit_state
+                    .pending_audits
+                    .keys()
+                    .copied()
+                    .collect();
+                for report_hash in pending_hashes {
+                    if audit_state.completed_audits.contains(&report_hash) {
+                        continue;
+                    }
+                    if let Some(pending) = audit_state.pending_audits.get(&report_hash) {
+                        if let Some(our_tranche) = pending.our_tranche {
+                            let elapsed_secs = (state.timeslot.saturating_sub(pending.report_timeslot)) as u64 * 6;
+                            let current_tranche = (elapsed_secs / 8) as u32;
+                            if our_tranche <= current_tranche {
+                                // Time to audit this report
+                                let empty_ctx = grey_state::refine::SimpleRefineContext {
+                                    code_blobs: std::collections::BTreeMap::new(),
+                                    storage: std::collections::BTreeMap::new(),
+                                    preimages: std::collections::BTreeMap::new(),
+                                };
+                                let is_valid = audit::audit_work_report(
+                                    protocol,
+                                    &pending.report,
+                                    &empty_ctx,
+                                );
+                                let ann = audit::create_announcement(
+                                    &report_hash,
+                                    is_valid,
+                                    config.validator_index,
+                                    my_secrets,
+                                );
+                                tracing::info!(
+                                    "Validator {} audited report 0x{}: {}",
+                                    config.validator_index,
+                                    hex::encode(&report_hash.0[..8]),
+                                    if is_valid { "VALID" } else { "INVALID" }
+                                );
+                                let ann_data = audit::encode_announcement(&ann);
+                                let _ = net_commands.send(NetworkCommand::BroadcastAnnouncement {
+                                    data: ann_data,
+                                });
+                                audit_state.add_announcement(ann);
+                                audit_state.mark_completed(&report_hash);
+                            }
+                        }
+                    }
+                }
+
+                // Prune old audits (older than 30 slots)
+                if state.timeslot > 30 {
+                    audit_state.prune_old_audits(state.timeslot - 30);
+                }
             }
 
             // Handle network events
@@ -329,6 +406,26 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                             }
                                             if let Err(e) = store.set_head(&import_hash, slot) {
                                                 tracing::error!("Failed to update head: {}", e);
+                                            }
+
+                                            // Register guarantees from imported block for auditing
+                                            for guarantee in &block.extrinsic.guarantees {
+                                                let report_hash = grey_crypto::blake2b_256(
+                                                    &grey_codec::header_codec::encode_header(&block.header),
+                                                );
+                                                let our_tranche = audit::compute_audit_tranche(
+                                                    &state.entropy[0],
+                                                    &report_hash,
+                                                    config.validator_index,
+                                                    30,
+                                                );
+                                                audit_state.add_pending(
+                                                    report_hash,
+                                                    guarantee.report.clone(),
+                                                    guarantee.report.core_index,
+                                                    slot,
+                                                    Some(our_tranche),
+                                                );
                                             }
 
                                             tracing::info!(
@@ -372,6 +469,38 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                     }
                     NetworkEvent::FinalityVote { .. } => {
                         // Simplified: we don't process explicit finality votes yet
+                    }
+                    NetworkEvent::AnnouncementReceived { data, source } => {
+                        if let Some(ann) = audit::decode_announcement(&data) {
+                            if audit::verify_announcement(&ann, &state) {
+                                tracing::info!(
+                                    "Validator {} received valid audit announcement from {} for report 0x{}: {}",
+                                    config.validator_index,
+                                    source,
+                                    hex::encode(&ann.report_hash.0[..8]),
+                                    if ann.is_valid { "VALID" } else { "INVALID" }
+                                );
+                                audit_state.add_announcement(ann);
+
+                                // Check for escalations
+                                let escalations = audit_state.reports_needing_escalation(
+                                    protocol.validators_count as usize / 3,
+                                );
+                                for hash in &escalations {
+                                    tracing::warn!(
+                                        "Validator {} ESCALATION needed for report 0x{}",
+                                        config.validator_index,
+                                        hex::encode(&hash.0[..8])
+                                    );
+                                }
+                            } else {
+                                tracing::warn!(
+                                    "Validator {} received invalid announcement from {}",
+                                    config.validator_index,
+                                    source
+                                );
+                            }
+                        }
                     }
                     NetworkEvent::GuaranteeReceived { data, source } => {
                         tracing::info!(

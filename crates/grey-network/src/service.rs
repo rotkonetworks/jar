@@ -23,6 +23,8 @@ const FINALITY_TOPIC: &str = "/jam/finality/1";
 const GUARANTEES_TOPIC: &str = "/jam/guarantees/1";
 /// Gossipsub topic for availability assurances.
 const ASSURANCES_TOPIC: &str = "/jam/assurances/1";
+/// Gossipsub topic for audit announcements.
+const ANNOUNCEMENTS_TOPIC: &str = "/jam/announcements/1";
 
 /// Messages that the network service can send to the node.
 #[derive(Debug)]
@@ -35,6 +37,8 @@ pub enum NetworkEvent {
     GuaranteeReceived { data: Vec<u8>, source: PeerId },
     /// An availability assurance was received from a peer.
     AssuranceReceived { data: Vec<u8>, source: PeerId },
+    /// An audit announcement was received from a peer.
+    AnnouncementReceived { data: Vec<u8>, source: PeerId },
     /// A chunk fetch request was received.
     ChunkRequest {
         report_hash: [u8; 32],
@@ -64,6 +68,8 @@ pub enum NetworkCommand {
     BroadcastGuarantee { data: Vec<u8> },
     /// Broadcast an availability assurance.
     BroadcastAssurance { data: Vec<u8> },
+    /// Broadcast an audit announcement.
+    BroadcastAnnouncement { data: Vec<u8> },
     /// Request a chunk from a specific peer.
     FetchChunk {
         peer: PeerId,
@@ -244,6 +250,7 @@ pub async fn start_network(
     let finality_topic = gossipsub::IdentTopic::new(FINALITY_TOPIC);
     let guarantees_topic = gossipsub::IdentTopic::new(GUARANTEES_TOPIC);
     let assurances_topic = gossipsub::IdentTopic::new(ASSURANCES_TOPIC);
+    let announcements_topic = gossipsub::IdentTopic::new(ANNOUNCEMENTS_TOPIC);
 
     swarm
         .behaviour_mut()
@@ -265,6 +272,11 @@ pub async fn start_network(
         .gossipsub
         .subscribe(&assurances_topic)
         .map_err(|e| format!("Failed to subscribe to assurances topic: {e}"))?;
+    swarm
+        .behaviour_mut()
+        .gossipsub
+        .subscribe(&announcements_topic)
+        .map_err(|e| format!("Failed to subscribe to announcements topic: {e}"))?;
 
     // Listen on the configured port
     let listen_addr: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}", config.listen_port)
@@ -303,6 +315,7 @@ pub async fn start_network(
         finality: finality_topic,
         guarantees: guarantees_topic,
         assurances: assurances_topic,
+        announcements: announcements_topic,
     };
     tokio::spawn(async move {
         run_network_loop(swarm, event_tx, cmd_rx, topics, validator_index).await;
@@ -325,6 +338,7 @@ struct TopicSet {
     finality: gossipsub::IdentTopic,
     guarantees: gossipsub::IdentTopic,
     assurances: gossipsub::IdentTopic,
+    announcements: gossipsub::IdentTopic,
 }
 
 fn build_swarm() -> Result<Swarm<JamBehaviour>, Box<dyn std::error::Error + Send + Sync>> {
@@ -425,6 +439,11 @@ async fn run_network_loop(
                             });
                         } else if topic == ASSURANCES_TOPIC {
                             let _ = event_tx.send(NetworkEvent::AssuranceReceived {
+                                data: message.data,
+                                source: propagation_source,
+                            });
+                        } else if topic == ANNOUNCEMENTS_TOPIC {
+                            let _ = event_tx.send(NetworkEvent::AnnouncementReceived {
                                 data: message.data,
                                 source: propagation_source,
                             });
@@ -597,6 +616,18 @@ async fn run_network_loop(
                         ) {
                             tracing::warn!(
                                 "Validator {} failed to publish assurance: {}",
+                                validator_index,
+                                e
+                            );
+                        }
+                    }
+                    NetworkCommand::BroadcastAnnouncement { data } => {
+                        if let Err(e) = swarm.behaviour_mut().gossipsub.publish(
+                            topics.announcements.clone(),
+                            data,
+                        ) {
+                            tracing::warn!(
+                                "Validator {} failed to publish announcement: {}",
                                 validator_index,
                                 e
                             );
