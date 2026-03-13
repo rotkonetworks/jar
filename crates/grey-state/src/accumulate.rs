@@ -787,7 +787,7 @@ fn handle_host_call(
         18 => host_new(pvm, regular, timeslot),
         19 => host_upgrade(pvm, regular),
         20 => host_transfer(pvm, regular),
-        21 => host_eject(pvm, regular, timeslot),
+        21 => host_eject(pvm, regular, timeslot, config),
         22 => host_query(pvm, regular),
         23 => host_solicit(pvm, regular, timeslot),
         24 => host_forget(pvm, regular, timeslot, config),
@@ -1178,35 +1178,81 @@ fn host_transfer(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
     true
 }
 
-/// eject (id=21): Eject a service (GP eq ΩJ).
-/// φ[7] = target service to eject (d), φ[8] = hash_ptr (o)
-/// On success: removes target, transfers its balance to caller.
-fn host_eject(pvm: &mut PvmInstance, ctx: &mut AccContext, _timeslot: Timeslot) -> bool {
-    let target = pvm.reg(7) as ServiceId;
+/// eject (id=21): Eject a service (GP eq ΩJ, lines 4601-4621).
+/// φ[7] = d (target service to eject), φ[8] = o (hash_ptr, 32 bytes)
+/// Checks: code_hash must equal ℰ_{32}(caller), items must be 2,
+/// (h,l) must be in preimage_info, and preimage must be old enough (y < t - D).
+fn host_eject(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot, config: &Config) -> bool {
+    let d = pvm.reg(7) as ServiceId;
     let o_ptr = pvm.reg(8) as u32;
 
-    // GP order (eq Ω_J): read hash from memory FIRST.
-    // If memory inaccessible → PANIC (⚡), takes priority over all other checks.
-    let _hash_data = match pvm.try_read_bytes(o_ptr, 32) {
-        Some(d) => d,
-        None => return false, // page fault → PANIC
+    // Step 1: Read hash h from memory at o..o+32. PANIC if inaccessible.
+    let hash_data = match pvm.try_read_bytes(o_ptr, 32) {
+        Some(data) => data,
+        None => return false, // page fault → PANIC (⚡)
+    };
+    let mut h = [0u8; 32];
+    h.copy_from_slice(&hash_data);
+    let h = Hash(h);
+
+    // Step 2: Resolve target service account.
+    // d = (x_e)_d[d] if d ≠ x_s ∧ d ∈ K((x_e)_d); else ∇
+    let ejected = if d != ctx.service_id {
+        ctx.accounts.get(&d)
+    } else {
+        None
     };
 
-    if target == ctx.service_id {
-        pvm.set_reg(7, WHO);
+    // Step 3: WHO if d = ∇ OR d.code_hash ≠ ℰ₃₂(x_s)
+    // ℰ₃₂(x_s) = 32-byte little-endian encoding of the caller's service ID
+    let caller_id_encoded = {
+        let mut buf = [0u8; 32];
+        buf[..4].copy_from_slice(&ctx.service_id.to_le_bytes());
+        Hash(buf)
+    };
+
+    let ejected = match ejected {
+        Some(acc) if acc.code_hash == caller_id_encoded => acc,
+        _ => {
+            pvm.set_reg(7, WHO);
+            return true;
+        }
+    };
+
+    // Step 4: Compute l = max(81, d_o) - 81 (preimage data length from total footprint)
+    let l = ejected.bytes.max(81) - 81;
+
+    // Step 5: HUH if d.items ≠ 2 OR (h, l) ∉ d.preimage_info
+    if ejected.items != 2 {
+        pvm.set_reg(7, HUH);
         return true;
     }
 
-    // TODO: Full GP eject logic (code_hash check, item count, preimage lookup, age check)
-    if let Some(ejected) = ctx.accounts.remove(&target) {
-        if let Some(self_acc) = ctx.accounts.get_mut(&ctx.service_id) {
-            self_acc.balance = self_acc.balance.saturating_add(ejected.balance);
+    let info_key = (h, l as u32);
+    let timeslots = match ejected.preimage_info.get(&info_key) {
+        Some(ts) => ts,
+        None => {
+            pvm.set_reg(7, HUH);
+            return true;
         }
-        pvm.set_reg(7, 0); // OK
-    } else {
-        pvm.set_reg(7, WHO);
+    };
+
+    // Step 6: OK if d_l[(h,l)] = [x, y] and y < t - D; else HUH
+    if timeslots.len() >= 2 {
+        let y = timeslots[1];
+        if y < timeslot.saturating_sub(config.preimage_expunge_period) {
+            // Success: remove target, transfer balance to caller
+            let ejected_balance = ejected.balance;
+            ctx.accounts.remove(&d);
+            if let Some(self_acc) = ctx.accounts.get_mut(&ctx.service_id) {
+                self_acc.balance = self_acc.balance.saturating_add(ejected_balance);
+            }
+            pvm.set_reg(7, OK);
+            return true;
+        }
     }
 
+    pvm.set_reg(7, HUH);
     true
 }
 
@@ -1807,8 +1853,9 @@ fn host_forget(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot, 
     true
 }
 
-/// provide (id=26): Provide a preimage (GP ΩP).
+/// provide (id=26): Provide a preimage (GP ΩP, lines 4704-4727).
 /// φ[7]=s (target service or NONE for self), φ[8]=o (data ptr), φ[9]=z (data len)
+/// Adds (service, data) to the preimage provisions set x_p.
 fn host_provide(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
     let target = if pvm.reg(7) == NONE {
         ctx.service_id
@@ -1821,48 +1868,54 @@ fn host_provide(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
     let o_ptr = pvm.reg(8) as u32;
     let z = pvm.reg(9) as u32;
 
+    // Read data from memory. PANIC if inaccessible.
     let data = match pvm.try_read_bytes(o_ptr, z) {
         Some(d) => d,
-        None => return false, // page fault → PANIC
+        None => return false, // page fault → PANIC (⚡)
     };
     let hash = grey_crypto::blake2b_256(&data);
 
-    if let Some(account) = ctx.accounts.get_mut(&target) {
-        // Check if there's a preimage_info entry with matching hash and length
-        let key = (hash, z);
-        // Promote from opaque data if not in structured preimage_info
-        if !account.preimage_info.contains_key(&key) {
-            let state_key = grey_merkle::state_serial::compute_preimage_info_state_key(
-                target, &hash, z,
-            );
-            if let Some(v) = account.opaque_data.remove(&state_key) {
-                let timeslots: Vec<Timeslot> = v
-                    .chunks_exact(4)
-                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect();
-                account.preimage_info.insert(key, timeslots);
-            }
+    // WHO if target service doesn't exist
+    let account = match ctx.accounts.get_mut(&target) {
+        Some(acc) => acc,
+        None => {
+            pvm.set_reg(7, WHO);
+            return true;
         }
+    };
 
-        if account.preimage_info.contains_key(&key) {
-            account.preimage_lookup.insert(hash, data);
-
-            // Update preimage_info: mark as provided with timeslot
-            if let Some(ts) = account.preimage_info.get(&key) {
-                if ts.is_empty() {
-                    // Not yet provided: no timeslot recorded yet
-                    // After provide, the info should have the current timeslot
-                    // For now, leave as is (provide doesn't change info state per GP)
-                }
-            }
-
-            pvm.set_reg(7, OK);
-        } else {
-            pvm.set_reg(7, HUH);
+    // Promote preimage_info from opaque data if needed
+    let key = (hash, z);
+    if !account.preimage_info.contains_key(&key) {
+        let state_key = grey_merkle::state_serial::compute_preimage_info_state_key(
+            target, &hash, z,
+        );
+        if let Some(v) = account.opaque_data.remove(&state_key) {
+            let timeslots: Vec<Timeslot> = v
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            account.preimage_info.insert(key, timeslots);
         }
-    } else {
-        pvm.set_reg(7, WHO);
     }
+
+    // HUH if a_l[(H(i), z)] ≠ [] — preimage_info entry has non-empty timeslots
+    if let Some(ts) = account.preimage_info.get(&key) {
+        if !ts.is_empty() {
+            pvm.set_reg(7, HUH);
+            return true;
+        }
+    }
+
+    // HUH if (s, i) already in preimage provisions set
+    if ctx._preimage_provisions.iter().any(|(sid, d)| *sid == target && *d == data) {
+        pvm.set_reg(7, HUH);
+        return true;
+    }
+
+    // OK: add (s, i) to preimage provisions set
+    ctx._preimage_provisions.push((target, data));
+    pvm.set_reg(7, OK);
     true
 }
 

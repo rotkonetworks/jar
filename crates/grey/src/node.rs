@@ -759,23 +759,41 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                 hex::encode(&hash.0[..8])
                             );
 
-                            // Deserialize the work package
-                            match serde_json::from_slice::<serde_json::Value>(&data) {
-                                Ok(_wp_json) => {
+                            // Decode work package from JAM codec and process it
+                            use grey_codec::decode::Decode;
+                            match grey_types::work::WorkPackage::decode(&data) {
+                                Ok((wp, _consumed)) => {
                                     tracing::info!(
-                                        "Work package received (raw bytes: {} bytes). \
-                                         Full deserialization requires JAM codec work-package decode.",
-                                        data.len()
+                                        "Decoded work package via RPC: {} items, auth_host={}",
+                                        wp.items.len(),
+                                        wp.auth_code_host
                                     );
-                                    // TODO: Decode work package from JAM codec bytes
-                                    // and call guarantor::process_work_package()
-                                    // For now, log and continue — the refine pipeline
-                                    // is called when we have a proper WorkPackage struct.
+                                    let rpc_slot = state.timeslot + 1;
+                                    match guarantor::process_work_package(
+                                        &config.protocol_config,
+                                        &wp,
+                                        &state,
+                                        &store,
+                                        config.validator_index,
+                                        my_secrets,
+                                        rpc_slot,
+                                        &mut guarantor_state,
+                                    ) {
+                                        Ok(report_hash) => {
+                                            tracing::info!(
+                                                "RPC work package processed, report_hash=0x{}",
+                                                hex::encode(&report_hash.0[..8])
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!("RPC work package processing failed: {}", e);
+                                        }
+                                    }
                                 }
-                                Err(_) => {
-                                    tracing::info!(
-                                        "Work package: {} raw bytes (binary format)",
-                                        data.len()
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to decode work package ({} bytes): {:?}",
+                                        data.len(), e
                                     );
                                 }
                             }
