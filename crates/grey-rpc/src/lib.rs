@@ -4,6 +4,7 @@
 //! - Work package submission
 //! - State queries (head, block, service accounts)
 //! - Node status
+//! - Work package context (refinement context + service info)
 
 use grey_store::Store;
 use grey_types::config::Config;
@@ -62,7 +63,7 @@ pub trait JamRpc {
     #[method(name = "jam_getBlockBySlot")]
     async fn get_block_by_slot(&self, slot: u32) -> Result<serde_json::Value, ErrorObjectOwned>;
 
-    /// Submit a work package (hex-encoded bytes).
+    /// Submit a work package (hex-encoded JAM-encoded bytes).
     #[method(name = "jam_submitWorkPackage")]
     async fn submit_work_package(
         &self,
@@ -79,6 +80,14 @@ pub trait JamRpc {
         &self,
         service_id: u32,
         key_hex: String,
+    ) -> Result<serde_json::Value, ErrorObjectOwned>;
+
+    /// Get work-package context: refinement context fields and service code hash.
+    /// Clients need this to build valid work packages.
+    #[method(name = "jam_getContext")]
+    async fn get_context(
+        &self,
+        service_id: u32,
     ) -> Result<serde_json::Value, ErrorObjectOwned>;
 }
 
@@ -203,25 +212,21 @@ impl JamRpcServer for RpcImpl {
             .get_head()
             .map_err(|e| internal_error(e.to_string()))?;
 
-        let state = self
-            .state
-            .store
-            .get_state(&head_hash, &self.state.config)
-            .map_err(|e| internal_error(e.to_string()))?;
-
-        let account = state
-            .services
-            .get(&service_id)
-            .ok_or_else(|| not_found(format!("service {} not found", service_id)))?;
-
         let key_bytes = hex::decode(key_hex.trim_start_matches("0x"))
             .map_err(|e| internal_error(format!("invalid hex key: {}", e)))?;
 
-        match account.storage.get(&key_bytes) {
+        // Direct lookup via computed state key — avoids full state deserialization
+        // and correctly handles service storage (which is opaque in deserialized state).
+        match self
+            .state
+            .store
+            .get_service_storage(&head_hash, service_id, &key_bytes)
+            .map_err(|e| internal_error(e.to_string()))?
+        {
             Some(value) => Ok(serde_json::json!({
                 "service_id": service_id,
                 "key": hex::encode(&key_bytes),
-                "value": hex::encode(value),
+                "value": hex::encode(&value),
                 "length": value.len(),
                 "slot": head_slot,
             })),
@@ -233,6 +238,46 @@ impl JamRpcServer for RpcImpl {
                 "slot": head_slot,
             })),
         }
+    }
+
+    async fn get_context(
+        &self,
+        service_id: u32,
+    ) -> Result<serde_json::Value, ErrorObjectOwned> {
+        let (head_hash, head_slot) = self
+            .state
+            .store
+            .get_head()
+            .map_err(|e| internal_error(e.to_string()))?;
+
+        // Get block header for state_root
+        let block = self
+            .state
+            .store
+            .get_block(&head_hash)
+            .map_err(|e| internal_error(e.to_string()))?;
+
+        let anchor = hex::encode(head_hash.0);
+        let state_root = hex::encode(block.header.state_root.0);
+        // beefy_root (accumulation output root) — use zero for now;
+        // full lookup would require parsing the recent_blocks blob.
+        let beefy_root = hex::encode([0u8; 32]);
+
+        // Direct lookup for service code hash (avoids full state deserialization)
+        let code_hash = self
+            .state
+            .store
+            .get_service_code_hash(&head_hash, service_id)
+            .map_err(|e| internal_error(e.to_string()))?
+            .map(|h| hex::encode(h.0));
+
+        Ok(serde_json::json!({
+            "slot": head_slot,
+            "anchor": anchor,
+            "state_root": state_root,
+            "beefy_root": beefy_root,
+            "code_hash": code_hash,
+        }))
     }
 }
 

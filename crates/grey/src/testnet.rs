@@ -22,6 +22,7 @@ use std::time::Duration;
 /// and reports results.
 pub async fn run_testnet(
     duration_secs: u64,
+    rpc_cors: bool,
 ) -> Result<TestnetResult, Box<dyn std::error::Error + Send + Sync>> {
     use grey_types::state::ServiceAccount;
 
@@ -64,18 +65,59 @@ pub async fn run_testnet(
         preimage_count: 0,
     });
 
-    // Populate auth_pool with the service code_hash so guarantees pass the authorizer check.
-    // The refine pipeline computes authorizer_hash = blake2b_256(auth_code) = code_hash.
+    // Install pixels service (ID 2000) if ELF available
+    let pixels_service_id: ServiceId = 2000;
+    if let Ok(elf_data) = std::fs::read(grey_transpiler::PIXELS_SERVICE_ELF_PATH) {
+        let pixels_blob = grey_transpiler::transpile_elf_service(&elf_data)
+            .expect("failed to transpile pixels service ELF");
+        let pixels_hash = grey_crypto::blake2b_256(&pixels_blob);
+        let mut px_preimages = BTreeMap::new();
+        px_preimages.insert(pixels_hash, pixels_blob);
+        genesis_state.services.insert(pixels_service_id, ServiceAccount {
+            code_hash: pixels_hash,
+            balance: 1_000_000_000,
+            min_accumulate_gas: 100_000,
+            min_on_transfer_gas: 0,
+            storage: BTreeMap::new(),
+            preimage_lookup: px_preimages,
+            preimage_info: BTreeMap::new(),
+            free_storage_offset: 0,
+            total_footprint: 0,
+            accumulation_counter: 0,
+            last_accumulation: 0,
+            last_activity: 0,
+            preimage_count: 0,
+        });
+        tracing::info!(
+            "Testnet: installed pixels service {} (code_hash=0x{})",
+            pixels_service_id,
+            hex::encode(&pixels_hash.0[..8])
+        );
+    }
+
+    // Populate auth_pool so guarantees pass the authorizer check.
+    // Core 0: demo service (1000), core 1: pixels service (2000), rest: demo.
+    let pixels_code_hash = genesis_state
+        .services
+        .get(&pixels_service_id)
+        .map(|s| s.code_hash);
     for core in 0..config.core_count as usize {
         if genesis_state.auth_pool[core].is_empty() {
-            genesis_state.auth_pool[core].push(code_hash);
+            if core == 1 {
+                if let Some(ph) = pixels_code_hash {
+                    genesis_state.auth_pool[core].push(ph);
+                } else {
+                    genesis_state.auth_pool[core].push(code_hash);
+                }
+            } else {
+                genesis_state.auth_pool[core].push(code_hash);
+            }
         }
     }
 
     tracing::info!(
-        "Testnet: installed service {} (code_hash=0x{}), auth_pool configured",
-        service_id,
-        hex::encode(&code_hash.0[..8])
+        "Testnet: auth_pool configured — core 0: svc 1000, core 1: svc {}",
+        if pixels_code_hash.is_some() { "2000" } else { "1000 (pixels not available)" }
     );
 
     // Use a shared genesis time for all validators
@@ -117,7 +159,7 @@ pub async fn run_testnet(
                 genesis_time,
                 db_path: format!("/tmp/grey-testnet-{}", genesis_time),
                 rpc_port: if i == 0 { 9933 } else { 0 },
-                rpc_cors: false,
+                rpc_cors: if i == 0 { rpc_cors } else { false },
                 genesis_state: Some(genesis_clone),
             };
             let _ = crate::node::run_node(node_config).await;

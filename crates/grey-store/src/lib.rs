@@ -150,6 +150,79 @@ impl Store {
         Ok(state)
     }
 
+    /// Look up a specific service storage entry by computing the expected state key.
+    /// Returns None if the entry doesn't exist.
+    pub fn get_service_storage(
+        &self,
+        block_hash: &Hash,
+        service_id: u32,
+        storage_key: &[u8],
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(STATE)?;
+        let val = table.get(&block_hash.0)?.ok_or(StoreError::NotFound)?;
+        let kvs = decode_state_kvs(val.value())
+            .ok_or_else(|| StoreError::Codec("invalid state KVs".into()))?;
+
+        let expected_key =
+            grey_merkle::state_serial::compute_storage_state_key(service_id, storage_key);
+        for (key, value) in &kvs {
+            if *key == expected_key {
+                return Ok(Some(value.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Look up a service account's code hash directly from state KVs.
+    /// The service metadata is at key C(255, service_id), and code_hash is bytes [1..33].
+    pub fn get_service_code_hash(
+        &self,
+        block_hash: &Hash,
+        service_id: u32,
+    ) -> Result<Option<Hash>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(STATE)?;
+        let val = table.get(&block_hash.0)?.ok_or(StoreError::NotFound)?;
+        let kvs = decode_state_kvs(val.value())
+            .ok_or_else(|| StoreError::Codec("invalid state KVs".into()))?;
+
+        let expected_key =
+            grey_merkle::state_serial::key_for_service_pub(255, service_id);
+        for (key, value) in &kvs {
+            if *key == expected_key {
+                // Service account: version(1) + code_hash(32) + ...
+                if value.len() >= 33 {
+                    let mut h = [0u8; 32];
+                    h.copy_from_slice(&value[1..33]);
+                    return Ok(Some(Hash(h)));
+                }
+                return Ok(None);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Look up a raw state KV by key from state KVs.
+    pub fn get_state_kv(
+        &self,
+        block_hash: &Hash,
+        state_key: &[u8; 31],
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(STATE)?;
+        let val = table.get(&block_hash.0)?.ok_or(StoreError::NotFound)?;
+        let kvs = decode_state_kvs(val.value())
+            .ok_or_else(|| StoreError::Codec("invalid state KVs".into()))?;
+
+        for (key, value) in &kvs {
+            if key == state_key {
+                return Ok(Some(value.clone()));
+            }
+        }
+        Ok(None)
+    }
+
     /// Delete state for a given block hash (for pruning).
     pub fn delete_state(&self, block_hash: &Hash) -> Result<(), StoreError> {
         let txn = self.db.begin_write()?;

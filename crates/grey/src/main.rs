@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Networked testnet mode
     if let Some(duration) = cli.testnet {
         tracing::info!("Running networked testnet for {}s", duration);
-        match testnet::run_testnet(duration).await {
+        match testnet::run_testnet(duration, cli.rpc_cors).await {
             Ok(result) => {
                 println!();
                 println!("=== TESTNET COMPLETED ===");

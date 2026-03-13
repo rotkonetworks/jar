@@ -368,9 +368,12 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                 blocks_authored += 1;
                                 last_authored_slot = current_slot;
 
-                                // Persist block and metadata
+                                // Persist block, state, and metadata
                                 if let Err(e) = store.put_block(&block) {
                                     tracing::error!("Failed to persist block: {}", e);
+                                }
+                                if let Err(e) = store.put_state(&header_hash, &state, protocol) {
+                                    tracing::error!("Failed to persist state: {}", e);
                                 }
                                 if let Err(e) = store.set_head(&header_hash, current_slot) {
                                     tracing::error!("Failed to update head: {}", e);
@@ -522,9 +525,12 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                             state = new_state;
                                             blocks_imported += 1;
 
-                                            // Persist imported block
+                                            // Persist imported block, state, and metadata
                                             if let Err(e) = store.put_block(&block) {
                                                 tracing::error!("Failed to persist imported block: {}", e);
+                                            }
+                                            if let Err(e) = store.put_state(&import_hash, &state, protocol) {
+                                                tracing::error!("Failed to persist state: {}", e);
                                             }
                                             if let Err(e) = store.set_head(&import_hash, slot) {
                                                 tracing::error!("Failed to update head: {}", e);
@@ -783,8 +789,25 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                         &mut guarantor_state,
                                     ) {
                                         Ok(report_hash) => {
+                                            // Co-sign with a second validator (testnet only)
+                                            let co_idx = if config.validator_index == 0 { 1u16 } else { 0 };
+                                            let co_secrets = &all_secrets[co_idx as usize];
+                                            let mut msg = Vec::with_capacity(13 + 32);
+                                            msg.extend_from_slice(b"jam_guarantee");
+                                            msg.extend_from_slice(&report_hash.0);
+                                            let co_sig = co_secrets.ed25519.sign(&msg);
+                                            for g in &mut guarantor_state.pending_guarantees {
+                                                g.credentials.push((co_idx, co_sig));
+                                            }
+                                            // Broadcast to peers
+                                            for g in &guarantor_state.pending_guarantees {
+                                                let g_data = guarantor::encode_guarantee(g);
+                                                let _ = net_commands.send(NetworkCommand::BroadcastGuarantee {
+                                                    data: g_data,
+                                                });
+                                            }
                                             tracing::info!(
-                                                "RPC work package processed, report_hash=0x{}",
+                                                "RPC work package processed (2 signers), report_hash=0x{}",
                                                 hex::encode(&report_hash.0[..8])
                                             );
                                         }
