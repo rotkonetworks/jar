@@ -166,7 +166,11 @@ pub async fn run_testnet(
                 rpc_cors: if i == 0 { rpc_cors } else { false },
                 genesis_state: Some(genesis_clone),
             };
-            let _ = crate::node::run_node(node_config).await;
+            if let Err(e) = crate::node::run_node(node_config).await {
+                tracing::error!("Validator {} exited with error: {}", i, e);
+            } else {
+                tracing::error!("Validator {} exited unexpectedly", i);
+            }
         });
 
         handles.push(handle);
@@ -177,8 +181,25 @@ pub async fn run_testnet(
 
     if unlimited {
         tracing::info!("All {} validators started, running until Ctrl+C...", v);
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("Received Ctrl+C, shutting down testnet...");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("Received Ctrl+C, shutting down testnet...");
+            }
+            // If any validator task exits, abort everything
+            result = async {
+                loop {
+                    for handle in &handles {
+                        if handle.is_finished() {
+                            return;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            } => {
+                tracing::error!("A validator exited — aborting testnet");
+                let _ = result;
+            }
+        }
     } else {
         tracing::info!("All {} validators started, waiting {}s for block production...", v, duration_secs);
         tokio::time::sleep(Duration::from_secs(duration_secs)).await;

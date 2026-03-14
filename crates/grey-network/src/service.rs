@@ -584,6 +584,29 @@ async fn run_network_loop(
                             peers.peer_count()
                         );
                     }
+                    SwarmEvent::ListenerError { error, .. } => {
+                        tracing::error!(
+                            "Validator {} listener error (fatal): {}",
+                            validator_index,
+                            error
+                        );
+                        break;
+                    }
+                    SwarmEvent::ListenerClosed { reason, .. } => {
+                        tracing::error!(
+                            "Validator {} listener closed (fatal): {:?}",
+                            validator_index,
+                            reason
+                        );
+                        break;
+                    }
+                    SwarmEvent::IncomingConnectionError { error, .. } => {
+                        tracing::warn!(
+                            "Validator {} incoming connection error: {}",
+                            validator_index,
+                            error
+                        );
+                    }
                     _ => {}
                 }
             }
