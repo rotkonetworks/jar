@@ -133,6 +133,8 @@ structure AccContext where
   itemsBlob : ByteArray
   /-- Individual encoded items for fetch mode 15. -/
   items : Array ByteArray
+  /-- Opaque data for fallback lookups (storage/preimage from initial keyvals). -/
+  opaqueData : Array (ByteArray × ByteArray)
 
 instance : Inhabited AccContext where
   default := {
@@ -152,6 +154,7 @@ instance : Inhabited AccContext where
     configBlob := ByteArray.empty
     itemsBlob := ByteArray.empty
     items := #[]
+    opaqueData := #[]
   }
 
 -- ============================================================================
@@ -263,21 +266,26 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
         (mkResult regs' mem gas', ctx)
 
   -- ===== lookup (2): Preimage lookup by hash =====
+  -- φ[7]=service_id (u64::MAX=self), φ[8]=hash_ptr, φ[9]=out_ptr,
+  -- φ[10]=offset, φ[11]=max_len
+  -- Returns: φ'[7] = total preimage length or NONE
   | 2 =>
-    -- reg[7] = service id, reg[8] = hash pointer, reg[9] = output pointer,
-    -- reg[10] = output max length
-    let sid := UInt32.ofNat (getReg regs 7).toNat
+    let rawSid := getReg regs 7
     let hashPtr := getReg regs 8
     let outPtr := getReg regs 9
-    let outMax := (getReg regs 10).toNat
+    let offset := (getReg regs 10).toNat
+    let maxLen := (getReg regs 11).toNat
     -- Read the 32-byte hash from memory
     match PVM.readByteArray mem hashPtr 32 with
     | .ok hashBytes =>
       let h : Hash := ⟨hashBytes, sorry⟩
+      let targetSid := if rawSid == UInt64.ofNat (2^64 - 1) then ctx.serviceId
+        else if rawSid.toNat < 2^32 then UInt32.ofNat rawSid.toNat
+        else ctx.serviceId
       -- Look up the preimage in the target service's preimage store
-      match ctx.state.accounts.lookup sid with
+      match ctx.state.accounts.lookup targetSid with
       | none =>
-        let regs' := setR7 regs PVM.RESULT_WHO
+        let regs' := setR7 regs PVM.RESULT_NONE
         (mkResult regs' mem gas', ctx)
       | some acct =>
         match acct.preimages.lookup h with
@@ -285,100 +293,124 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
           let regs' := setR7 regs PVM.RESULT_NONE
           (mkResult regs' mem gas', ctx)
         | some preimage =>
-          let writeLen := min preimage.size outMax
-          let toWrite := preimage.extract 0 writeLen
-          match PVM.writeByteArray mem outPtr toWrite with
-          | .ok mem' =>
-            let regs' := setR7 regs PVM.RESULT_OK
-            let regs' := setReg regs' 8 (UInt64.ofNat preimage.size)
-            (mkResult regs' mem' gas', ctx)
-          | _ =>
-            let regs' := setR7 regs PVM.RESULT_OOB
+          let vLen := preimage.size
+          let f := min offset vLen
+          let l := min maxLen (vLen - f)
+          if l > 0 then
+            let toWrite := preimage.extract f (f + l)
+            match PVM.writeByteArray mem outPtr toWrite with
+            | .ok mem' =>
+              let regs' := setR7 regs (UInt64.ofNat vLen)
+              (mkResult regs' mem' gas', ctx)
+            | _ =>
+              let regs' := setR7 regs PVM.RESULT_OOB
+              (mkResult regs' mem gas', ctx)
+          else
+            let regs' := setR7 regs (UInt64.ofNat vLen)
             (mkResult regs' mem gas', ctx)
     | _ =>
       let regs' := setR7 regs PVM.RESULT_OOB
       (mkResult regs' mem gas', ctx)
 
   -- ===== read (3): Read from service storage =====
+  -- φ[7]=service_id (u64::MAX=self), φ[8]=key_ptr, φ[9]=key_len,
+  -- φ[10]=out_ptr, φ[11]=offset, φ[12]=max_len
+  -- Returns: φ'[7] = total value length or NONE
   | 3 =>
-    -- reg[7] = service id (0 = self), reg[8] = key pointer, reg[9] = key length,
-    -- reg[10] = value output pointer, reg[11] = value max length
-    let sid := UInt32.ofNat (getReg regs 7).toNat
+    let rawSid := getReg regs 7
     let keyPtr := getReg regs 8
     let keyLen := (getReg regs 9).toNat
-    let valPtr := getReg regs 10
-    let valMax := (getReg regs 11).toNat
+    let outPtr := getReg regs 10
+    let offset := (getReg regs 11).toNat
+    let maxLen := (getReg regs 12).toNat
     match PVM.readByteArray mem keyPtr keyLen with
     | .ok keyBytes =>
-      let targetSid := if sid == 0 then ctx.serviceId else sid
+      let targetSid := if rawSid == UInt64.ofNat (2^64 - 1) then ctx.serviceId
+        else if rawSid.toNat < 2^32 then UInt32.ofNat rawSid.toNat
+        else ctx.serviceId  -- out of range → NONE
       match ctx.state.accounts.lookup targetSid with
       | none =>
-        let regs' := setR7 regs PVM.RESULT_WHO
+        let regs' := setR7 regs PVM.RESULT_NONE
         (mkResult regs' mem gas', ctx)
       | some acct =>
-        match acct.storage.lookup keyBytes with
+        -- Look up in structured storage first, then fall back to opaqueData
+        let valOpt : Option (ByteArray × AccContext) :=
+          match acct.storage.lookup keyBytes with
+          | some v => some (v, ctx)
+          | none =>
+            -- Fall back to opaqueData: compute state key and look up
+            let stateKey := StateSerialization.stateKeyForServiceData targetSid
+              (StateSerialization.storageHashArg keyBytes)
+            let found := ctx.opaqueData.findSome? fun (k, v) =>
+              if k == stateKey.data then some v else (none : Option ByteArray)
+            match found with
+            | some v =>
+              -- Promote to structured storage
+              let acct' := { acct with storage := acct.storage.insert keyBytes v }
+              let accounts' := ctx.state.accounts.insert targetSid acct'
+              let state' := { ctx.state with accounts := accounts' }
+              some (v, { ctx with state := state' })
+            | none => none
+        match valOpt with
         | none =>
           let regs' := setR7 regs PVM.RESULT_NONE
           (mkResult regs' mem gas', ctx)
-        | some val =>
-          let writeLen := min val.size valMax
-          let toWrite := val.extract 0 writeLen
-          match PVM.writeByteArray mem valPtr toWrite with
-          | .ok mem' =>
-            let regs' := setR7 regs PVM.RESULT_OK
-            let regs' := setReg regs' 8 (UInt64.ofNat val.size)
-            (mkResult regs' mem' gas', ctx)
-          | _ =>
-            let regs' := setR7 regs PVM.RESULT_OOB
-            (mkResult regs' mem gas', ctx)
+        | some (val, ctx') =>
+          let vLen := val.size
+          let f := min offset vLen
+          let l := min maxLen (vLen - f)
+          if l > 0 then
+            let toWrite := val.extract f (f + l)
+            match PVM.writeByteArray mem outPtr toWrite with
+            | .ok mem' =>
+              let regs' := setR7 regs (UInt64.ofNat vLen)
+              (mkResult regs' mem' gas', ctx')
+            | _ =>
+              let regs' := setR7 regs PVM.RESULT_OOB
+              (mkResult regs' mem gas', ctx')
+          else
+            let regs' := setR7 regs (UInt64.ofNat vLen)
+            (mkResult regs' mem gas', ctx')
     | _ =>
       let regs' := setR7 regs PVM.RESULT_OOB
       (mkResult regs' mem gas', ctx)
 
   -- ===== write (4): Write to own storage =====
+  -- φ[7]=key_ptr, φ[8]=key_len, φ[9]=val_ptr, φ[10]=val_len
+  -- Returns: φ'[7] = old value length (or NONE if key didn't exist)
   | 4 =>
-    -- reg[7] = key pointer, reg[8] = key length,
-    -- reg[9] = value pointer, reg[10] = value length
     let keyPtr := getReg regs 7
     let keyLen := (getReg regs 8).toNat
     let valPtr := getReg regs 9
     let valLen := (getReg regs 10).toNat
     match PVM.readByteArray mem keyPtr keyLen with
     | .ok keyBytes =>
-      if valLen == 0 then
-        -- Delete the key
-        match ctx.state.accounts.lookup ctx.serviceId with
-        | none =>
-          let regs' := setR7 regs PVM.RESULT_NONE
-          (mkResult regs' mem gas', ctx)
-        | some acct =>
-          let prevSize := match acct.storage.lookup keyBytes with
-            | some v => v.size | none => 0
+      match ctx.state.accounts.lookup ctx.serviceId with
+      | none =>
+        let regs' := setR7 regs PVM.RESULT_NONE
+        (mkResult regs' mem gas', ctx)
+      | some acct =>
+        let oldLen : UInt64 := match acct.storage.lookup keyBytes with
+          | some v => UInt64.ofNat v.size
+          | none => PVM.RESULT_NONE
+        if valLen == 0 then
+          -- Delete the key
           let acct' := { acct with storage := acct.storage.erase keyBytes }
           let accounts' := ctx.state.accounts.insert ctx.serviceId acct'
           let state' := { ctx.state with accounts := accounts' }
-          let regs' := setR7 regs PVM.RESULT_OK
-          let regs' := setReg regs' 8 (UInt64.ofNat prevSize)
+          let regs' := setR7 regs oldLen
           (mkResult regs' mem gas', { ctx with state := state' })
-      else
-        match PVM.readByteArray mem valPtr valLen with
-        | .ok valBytes =>
-          match ctx.state.accounts.lookup ctx.serviceId with
-          | none =>
-            let regs' := setR7 regs PVM.RESULT_NONE
-            (mkResult regs' mem gas', ctx)
-          | some acct =>
-            let prevSize := match acct.storage.lookup keyBytes with
-              | some v => v.size | none => 0
+        else
+          match PVM.readByteArray mem valPtr valLen with
+          | .ok valBytes =>
             let acct' := { acct with storage := acct.storage.insert keyBytes valBytes }
             let accounts' := ctx.state.accounts.insert ctx.serviceId acct'
             let state' := { ctx.state with accounts := accounts' }
-            let regs' := setR7 regs PVM.RESULT_OK
-            let regs' := setReg regs' 8 (UInt64.ofNat prevSize)
+            let regs' := setR7 regs oldLen
             (mkResult regs' mem gas', { ctx with state := state' })
-        | _ =>
-          let regs' := setR7 regs PVM.RESULT_OOB
-          (mkResult regs' mem gas', ctx)
+          | _ =>
+            let regs' := setR7 regs PVM.RESULT_OOB
+            (mkResult regs' mem gas', ctx)
     | _ =>
       let regs' := setR7 regs PVM.RESULT_OOB
       (mkResult regs' mem gas', ctx)
@@ -823,28 +855,13 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
 -- ============================================================================
 
 /-- Encode accumulation arguments for PVM input. GP Appendix B §B.8.
-    Format: service_id(4) ‖ operand_count(4) ‖ transfer_count(4) ‖
-    for each operand: package_hash(32) ‖ segment_root(32) ‖ authorizer_hash(32) ‖
-      payload_hash(32) ‖ gas_limit(8) ‖ auth_output_len(4) ‖ auth_output ‖ result_encoding
-    for each transfer: source(4) ‖ dest(4) ‖ amount(8) ‖ memo(W_T) ‖ gas(8) -/
-private def encodeAccArgs (serviceId : ServiceId) (operands : Array OperandTuple)
-    (transfers : Array DeferredTransfer) : ByteArray :=
-  let header := Codec.encodeFixedNat 4 serviceId.toNat
-    ++ Codec.encodeFixedNat 4 operands.size
-    ++ Codec.encodeFixedNat 4 transfers.size
-  let opBytes := operands.foldl (init := ByteArray.empty) fun acc op =>
-    acc ++ op.packageHash.data ++ op.segmentRoot.data
-      ++ op.authorizerHash.data ++ op.payloadHash.data
-      ++ Codec.encodeFixedNat 8 op.gasLimit.toNat
-      ++ Codec.encodeFixedNat 4 op.authOutput.size ++ op.authOutput
-      ++ Codec.encodeWorkResult op.result
-  let xferBytes := transfers.foldl (init := ByteArray.empty) fun acc t =>
-    acc ++ Codec.encodeFixedNat 4 t.source.toNat
-      ++ Codec.encodeFixedNat 4 t.dest.toNat
-      ++ Codec.encodeFixedNat 8 t.amount.toNat
-      ++ t.memo.data
-      ++ Codec.encodeFixedNat 8 t.gas.toNat
-  header ++ opBytes ++ xferBytes
+    Format: varint(timeslot) ‖ varint(service_id) ‖ varint(item_count)
+    Items are accessed via fetch host call (modes 14/15), NOT embedded in args. -/
+private def encodeAccArgs (timeslot : Timeslot) (serviceId : ServiceId)
+    (itemCount : Nat) : ByteArray :=
+  Codec.encodeNat timeslot.toNat
+    ++ Codec.encodeNat serviceId.toNat
+    ++ Codec.encodeNat itemCount
 
 /-- Encode a single operand item for fetch mode 14/15.
     Format: 0x00 (discriminator) ‖ package_hash(32) ‖ segment_root(32) ‖
@@ -906,6 +923,29 @@ def accone (ps : PartialState) (serviceId : ServiceId)
     let acct' := { acct with balance := acct.balance + transferBalance }
     let ps := { ps with accounts := ps.accounts.insert serviceId acct' }
 
+    -- Compute next available service ID (GP eq B.10)
+    -- i = S + (H(E_N(s) ++ η'₀ ++ E_N(τ')) mod (2^32 - S - 2^8))
+    let sThreshold : Nat := 2^16  -- S per GP I.4.4
+    let hashInput := Codec.encodeNat serviceId.toNat ++ entropy.data
+      ++ Codec.encodeNat timeslot.toNat
+    let hashBytes := Crypto.blake2b hashInput
+    let hashVal : Nat :=
+      (hashBytes.data.get! 0).toNat +
+      (hashBytes.data.get! 1).toNat * 256 +
+      (hashBytes.data.get! 2).toNat * 65536 +
+      (hashBytes.data.get! 3).toNat * 16777216
+    let range : Nat := 2^32 - sThreshold - 2^8
+    let rawNextId := sThreshold + (hashVal % range)
+    -- check(): ensure not already in use (simplified: unlikely to collide)
+    let nextId := if (ps.accounts.lookup (UInt32.ofNat rawNextId)).isNone
+      then rawNextId
+      else Id.run do
+        let mut id := sThreshold + ((rawNextId - sThreshold + 1) % range)
+        for _ in [:256] do
+          if (ps.accounts.lookup (UInt32.ofNat id)).isNone then return id
+          id := sThreshold + ((id - sThreshold + 1) % range)
+        return id
+
     -- Build accumulation context
     let ctx : AccContext := {
       serviceId
@@ -916,12 +956,13 @@ def accone (ps : PartialState) (serviceId : ServiceId)
       gasUsed := 0
       operands
       timeslot
-      nextServiceId := UInt32.ofNat S_MIN
+      nextServiceId := UInt32.ofNat nextId
       checkpoint := none
       entropy
       configBlob
       itemsBlob
       items
+      opaqueData
     }
 
     -- Look up service code blob from preimage store, falling back to opaque data
@@ -939,7 +980,9 @@ def accone (ps : PartialState) (serviceId : ServiceId)
         gasUsed := totalGas, provisions := #[] }
     | some codeBlob =>
       -- Encode accumulation arguments
-      let args := encodeAccArgs serviceId operands transfers
+      let itemCount := transfers.size + operands.size
+      let args := encodeAccArgs timeslot serviceId itemCount
+      let _ := ()
       -- Initialize PVM with service code and arguments
       match PVM.initStandard codeBlob args with
       | none =>
@@ -947,6 +990,7 @@ def accone (ps : PartialState) (serviceId : ServiceId)
         { postState := ps, deferredTransfers := #[], yieldHash := none,
           gasUsed := totalGas, provisions := #[] }
       | some (prog, regs, mem) =>
+        let _ := ()
         -- Run PVM with host-call dispatch via handleHostCall
         let (result, ctx') := PVM.runWithHostCalls AccContext
           prog 5 regs mem (Int64.ofUInt64 totalGas)
@@ -1090,6 +1134,53 @@ structure AccumulationResult where
   /-- Per-service gas usage. -/
   gasUsage : Dict ServiceId Gas
 
+/-- Build the 134-byte protocol configuration blob for fetch mode 0.
+    Format: E_8(B_I, B_L, B_S) ‖ E_2(C) ‖ E_4(D, E) ‖ E_8(G_A, G_I, G_R, G_T) ‖
+    E_2(H, I, J, K) ‖ E_4(L) ‖ E_2(N, O, P, Q, R, T, U, V) ‖
+    E_4(W_A, W_B, W_C, W_E, W_M, W_P, W_R, W_T, W_X, Y) = 134 bytes. -/
+private def buildConfigBlob : ByteArray :=
+  -- E_8 values (3 × 8 = 24 bytes)
+  Codec.encodeFixedNat 8 B_I
+  ++ Codec.encodeFixedNat 8 B_L
+  ++ Codec.encodeFixedNat 8 B_S
+  -- E_2 values (1 × 2 = 2 bytes)
+  ++ Codec.encodeFixedNat 2 C
+  -- E_4 values (2 × 4 = 8 bytes)
+  ++ Codec.encodeFixedNat 4 D_EXPUNGE
+  ++ Codec.encodeFixedNat 4 E
+  -- E_8 values (4 × 8 = 32 bytes)
+  ++ Codec.encodeFixedNat 8 G_A
+  ++ Codec.encodeFixedNat 8 G_I
+  ++ Codec.encodeFixedNat 8 G_R
+  ++ Codec.encodeFixedNat 8 G_T
+  -- E_2 values (4 × 2 = 8 bytes)
+  ++ Codec.encodeFixedNat 2 H_RECENT
+  ++ Codec.encodeFixedNat 2 I_MAX_ITEMS
+  ++ Codec.encodeFixedNat 2 J_MAX_DEPS
+  ++ Codec.encodeFixedNat 2 K_MAX_TICKETS
+  -- E_4 value (1 × 4 = 4 bytes)
+  ++ Codec.encodeFixedNat 4 L_MAX_ANCHOR
+  -- E_2 values (8 × 2 = 16 bytes)
+  ++ Codec.encodeFixedNat 2 N_TICKETS
+  ++ Codec.encodeFixedNat 2 O_POOL
+  ++ Codec.encodeFixedNat 2 P
+  ++ Codec.encodeFixedNat 2 Q_QUEUE
+  ++ Codec.encodeFixedNat 2 R_ROTATION
+  ++ Codec.encodeFixedNat 2 T_MAX_EXTRINSICS
+  ++ Codec.encodeFixedNat 2 U_TIMEOUT
+  ++ Codec.encodeFixedNat 2 V
+  -- E_4 values (10 × 4 = 40 bytes)
+  ++ Codec.encodeFixedNat 4 W_A
+  ++ Codec.encodeFixedNat 4 W_B
+  ++ Codec.encodeFixedNat 4 W_C
+  ++ Codec.encodeFixedNat 4 W_E
+  ++ Codec.encodeFixedNat 4 W_M
+  ++ Codec.encodeFixedNat 4 W_P
+  ++ Codec.encodeFixedNat 4 W_R
+  ++ Codec.encodeFixedNat 4 W_T
+  ++ Codec.encodeFixedNat 4 W_X
+  ++ Codec.encodeFixedNat 4 Y_TAIL
+
 /-- Perform block-level accumulation. GP §12.
     Takes available work-reports that have been assured and
     runs the full accseq pipeline. -/
@@ -1103,9 +1194,11 @@ def accumulate (state : State) (reports : Array WorkReport)
   let alwaysGas := freeGasMap.values.foldl (init := 0) fun acc g => acc + g.toNat
   let _totalGas := max G_T (G_A * C + alwaysGas)
 
+  let configBlob := buildConfigBlob
+
   let (_, ps', outputs, gasUsage) := accseq
     (UInt64.ofNat G_T) reports #[] ps freeGasMap timeslot
-    state.entropy.current ByteArray.empty opaqueData
+    state.entropy.current configBlob opaqueData
 
   { services := ps'.accounts
     privileged := {

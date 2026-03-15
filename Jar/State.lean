@@ -382,8 +382,11 @@ def performAccumulation
       return h
     else accHistory''
   -- Build per-service statistics from gas usage
+  -- N(s) = count of work items (digests) for service s in accumulated reports
   let accStats := result.gasUsage.entries.foldl (init := Dict.empty (K := ServiceId) (V := ServiceStatistics))
     fun acc (sid, gas) =>
+      let itemCount := available.foldl (init := 0) fun cnt wr =>
+        cnt + (wr.digests.filter fun d => d.serviceId == sid).size
       acc.insert sid {
         provided := (0, 0)
         refinement := (0, 0)
@@ -391,7 +394,7 @@ def performAccumulation
         extrinsicCount := 0
         extrinsicSize := 0
         exports := 0
-        accumulation := (1, gas)
+        accumulation := (itemCount, gas)
       }
   { services := result.services
     privileged := result.privileged
@@ -576,7 +579,7 @@ def updateStatistics
 
   -- §13.2: Service statistics — always fresh per block (not accumulated within epoch)
   let serviceStats : Dict ServiceId ServiceStatistics := Dict.empty
-  -- Add refinement stats from guarantees
+  -- Add refinement stats from incoming guarantees (GP eq R(s))
   let serviceStats := e.guarantees.foldl (init := serviceStats) fun ss g =>
     g.report.digests.foldl (init := ss) fun ss' d =>
       let existing := match ss'.lookup d.serviceId with

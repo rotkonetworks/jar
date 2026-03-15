@@ -604,17 +604,28 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
               if a.get! i < b.get! i then return true
               if a.get! i > b.get! i then return false
             return a.size < b.size
-        let allPostKvs := (postKvs ++ opaqueData).qsort fun (k1, _) (k2, _) => byteArrayLt k1 k2
+        -- Filter opaqueData to remove entries whose keys appear in postKvs
+        let postKeys := postKvs.map Prod.fst
+        let filteredOpaque := opaqueData.filter fun (k, _) =>
+          !postKeys.any (· == k)
+        let allPostKvs := (postKvs ++ filteredOpaque).qsort fun (k1, _) (k2, _) => byteArrayLt k1 k2
         let computedRoot := Merkle.trieRoot (allPostKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
         if computedRoot == expectedPostRoot then
           IO.println s!"  PASS {name}"
           passed := passed + 1
-          currentState := some (postState, opaqueData)
+          currentState := some (postState, filteredOpaque)
         else
           IO.println s!"  FAIL {name}: post_state root mismatch"
           IO.println s!"    expected: {bytesToHex expectedPostRoot.data}"
           IO.println s!"    got:      {bytesToHex computedRoot.data}"
+          IO.println s!"    total KVs: {allPostKvs.size} (serialized={postKvs.size} opaque={filteredOpaque.size})"
+          pure ()
+          pure ()
           -- Debug: show serialized component sizes and hashes
+          let mut opaqueByIdx : Array (Nat × Nat) := #[]
+          for (k, _v) in filteredOpaque do
+            let idx := k.get! 0
+            opaqueByIdx := opaqueByIdx.push (idx.toNat, 0)
           for (k, v) in allPostKvs do
             let idx := k.get! 0
             if idx >= 1 && idx <= 16 || idx == 255 then
@@ -623,7 +634,7 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
           pure ()
           failed := failed + 1
           -- Continue threading to see if subsequent blocks also fail
-          currentState := some (postState, opaqueData)
+          currentState := some (postState, filteredOpaque)
     | none =>
       if isError then
         IO.println s!"  PASS {name} (expected error)"

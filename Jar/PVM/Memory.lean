@@ -207,28 +207,29 @@ def writeByteArray (m : Memory) (addr : UInt64) (data : ByteArray) : MemResult M
 /-- sbrk(n): Grow the heap by n pages. Returns new heap base or 0 on failure.
     Finds the first inaccessible page after existing writable heap and
     marks n new pages as writable. -/
-def sbrk (m : Memory) (nPages : UInt64) : Memory × UInt64 :=
-  if nPages.toNat == 0 then (m, 0)
+def sbrk (m : Memory) (sizeBytes : UInt64) : Memory × UInt64 :=
+  if sizeBytes.toNat > 2^32 then
+    -- Too large → return 0
+    (m, 0)
+  else if sizeBytes.toNat == 0 then
+    -- Query mode: return current heap top address
+    (m, UInt64.ofNat m.heapTop)
   else
-    -- Find the end of current writable region (simplified: scan from start)
-    let firstFree := Id.run do
-      let mut p := Z_Z / Z_P  -- Start after reserved zone
-      for _ in [:m.access.size] do
-        if p < m.access.size then
-          match m.access[p]! with
-          | .writable => p := p + 1
-          | .readable => p := p + 1
-          | .inaccessible => return p
-        else return p
-      return p
-    let n := nPages.toNat
-    if firstFree + n > m.access.size then (m, 0)
+    let oldTop := m.heapTop
+    let newTop := oldTop + sizeBytes.toNat
+    if newTop > 2^32 then (m, 0)
     else
+      -- Map any pages in [oldTop, newTop) that aren't mapped yet
+      let startPage := oldTop / Z_P
+      let endPage := (newTop - 1) / Z_P
       let access' := Id.run do
         let mut acc := m.access
-        for i in [:n] do
-          acc := acc.set! (firstFree + i) .writable
+        for p in [startPage:endPage + 1] do
+          if p < acc.size then
+            match acc[p]! with
+            | .inaccessible => acc := acc.set! p .writable
+            | _ => pure ()
         return acc
-      ({ m with access := access' }, UInt64.ofNat (firstFree * Z_P))
+      ({ m with access := access', heapTop := newTop }, UInt64.ofNat oldTop)
 
 end Jar.PVM

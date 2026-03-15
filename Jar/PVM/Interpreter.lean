@@ -190,7 +190,9 @@ def initStandard (blob' : ByteArray) (args : ByteArray)
   let access := mapRegionAccess access argBase (pageRound args.size) .readable
 
   -- Build sparse memory and copy data
-  let mem : Memory := { pages := Dict.empty, access }
+  -- heap_top starts at end of pre-mapped rw+heap region (matching Grey)
+  let heapTop := rwBase + pageRound rwTotal
+  let mem : Memory := { pages := Dict.empty, access, heapTop }
   let mem := copyToMem mem roBase roData
   let mem := copyToMem mem rwBase rwData
   let mem := copyToMem mem argBase args

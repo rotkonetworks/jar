@@ -67,6 +67,8 @@ structure Memory where
   pages : Dict Nat ByteArray
   /-- μ_a : Per-page access flags. -/
   access : Array PageAccess
+  /-- Heap top pointer (byte address) for sbrk. -/
+  heapTop : Nat := 0
 
 namespace Memory
 
