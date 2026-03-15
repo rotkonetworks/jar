@@ -731,23 +731,25 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
       -- Page fault on queue read → panic (GP: ⚡)
       (mkPanic regs mem gas', ctx)
 
-  -- ===== designate (16): Set pending validator keys =====
+  -- ===== designate (16): Set pending validator keys (GP ΩD) =====
+  -- φ[7] = o (pointer to V validator keys, 336 bytes each)
+  -- GP order: read memory FIRST, then check privileges.
   | 16 =>
-    -- Only the designator service can call this
-    if ctx.serviceId != ctx.state.designator then
-      let regs' := setR7 regs PVM.RESULT_CORE
-      (mkResult regs' mem gas', ctx)
-    else
-      -- reg[7] = keys pointer (V validator keys in memory)
-      let keysPtr := getReg regs 7
-      -- Each ValidatorKey: bandersnatch(32) + ed25519(32) + bls(144) + metadata(128) = 336 bytes
-      let keySize := 336
-      let keys := Id.run do
-        let mut arr : Array ValidatorKey := #[]
-        for i in [:V] do
-          let offset := keysPtr + UInt64.ofNat (i * keySize)
-          match PVM.readByteArray mem offset keySize with
-          | .ok kBytes =>
+    let keysPtr := getReg regs 7
+    let keySize := 336
+    -- Read V * 336 bytes from memory FIRST (page fault → PANIC)
+    match PVM.readByteArray mem keysPtr (V * keySize) with
+    | .ok keysBytes =>
+      -- Check caller is the designator
+      if ctx.serviceId != ctx.state.designator then
+        let regs' := setR7 regs PVM.RESULT_HUH
+        (mkResult regs' mem gas', ctx)
+      else
+        let keys := Id.run do
+          let mut arr : Array ValidatorKey := #[]
+          for i in [:V] do
+            let offset := i * keySize
+            let kBytes := keysBytes.extract offset (offset + keySize)
             let vk : ValidatorKey := {
               bandersnatch := ⟨kBytes.extract 0 32, sorry⟩
               ed25519 := ⟨kBytes.extract 32 64, sorry⟩
@@ -755,11 +757,13 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
               metadata := ⟨kBytes.extract 208 336, sorry⟩
             }
             arr := arr.push vk
-          | _ => arr := arr.push default
-        return arr
-      let state' := { ctx.state with stagingKeys := keys }
-      let regs' := setR7 regs PVM.RESULT_OK
-      (mkResult regs' mem gas', { ctx with state := state' })
+          return arr
+        let state' := { ctx.state with stagingKeys := keys }
+        let regs' := setR7 regs PVM.RESULT_OK
+        (mkResult regs' mem gas', { ctx with state := state' })
+    | _ =>
+      -- Page fault on keys read → panic (GP: ⚡)
+      (mkPanic regs mem gas', ctx)
 
   -- ===== checkpoint (17): Save accumulation checkpoint =====
   | 17 =>

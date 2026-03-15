@@ -835,7 +835,7 @@ def stateTransition (s : State) (b : Block) : Option State := do
   pure {
     authPool := alpha'
     recent := beta'
-    accOutputs := accResult.outputs
+    accOutputs := accResult.outputs.qsort fun (a, _) (b, _) => a.toNat < b.toNat
     safrole := Consensus.updateSafrole s.safrole ext.tickets eta' kappa'
                   (isEpochChange s.timeslot t') (epochSlot s.timeslot)
                   (epochIndex s.timeslot) (epochIndex t')
@@ -882,7 +882,7 @@ def stateTransitionWithOpaque (s : State) (b : Block)
   pure ({
     authPool := alpha'
     recent := beta'
-    accOutputs := accResult.outputs
+    accOutputs := accResult.outputs.qsort fun (a, _) (b, _) => a.toNat < b.toNat
     safrole := Consensus.updateSafrole s.safrole ext.tickets eta' kappa'
                   (isEpochChange s.timeslot t') (epochSlot s.timeslot)
                   (epochIndex s.timeslot) (epochIndex t')
@@ -926,7 +926,7 @@ def stateTransitionNoSealCheck (s : State) (b : Block) : Option State := do
   pure {
     authPool := alpha'
     recent := beta'
-    accOutputs := accResult.outputs
+    accOutputs := accResult.outputs.qsort fun (a, _) (b, _) => a.toNat < b.toNat
     safrole := Consensus.updateSafrole s.safrole ext.tickets eta' kappa'
                   (isEpochChange s.timeslot t') (epochSlot s.timeslot)
                   (epochIndex s.timeslot) (epochIndex t')

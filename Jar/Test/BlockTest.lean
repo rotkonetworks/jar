@@ -637,7 +637,6 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
           IO.println s!"    expected: {bytesToHex expectedPostRoot.data}"
           IO.println s!"    got:      {bytesToHex computedRoot.data}"
           IO.println s!"    total KVs: {allPostKvs.size} (serialized={postKvs.size} opaque={filteredOpaque.size})"
-          pure ()
           if false then
             let preSerKvs := (@StateSerialization.serializeState _ state).map fun (k, v) => (k.data, v)
             let preOpaqueKvs := (preSerKvs ++ opaqueData).qsort fun (k1, _) (k2, _) => byteArrayLt k1 k2
