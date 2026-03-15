@@ -1444,13 +1444,8 @@ def accone (ps : PartialState) (serviceId : ServiceId)
                (#[] : Array (ServiceId × ByteArray)), savedOpaque)
             | none =>
               (ps, #[], none, #[], opaqueData')
-        -- Update last accumulation timeslot (position a in serialized format)
-        -- JAR's `parent` field maps to serialized position a = last accumulation timeslot
-        let finalState := match finalState.accounts.lookup serviceId with
-          | some a =>
-            let a' := { a with parent := UInt32.ofNat timeslot.toNat }
-            { finalState with accounts := finalState.accounts.insert serviceId a' }
-          | none => finalState
+        -- Note: a_a (last accumulation timeslot) is updated in the δ‡ step
+        -- in State.lean's performAccumulation, not here in accone.
         let gasUsed := totalGas - (if result.gas.toUInt64 > totalGas then 0 else result.gas.toUInt64)
         let traceStr := String.intercalate "," (tracePCs.toList.map toString)
         let exitStr := match result.exitReason with

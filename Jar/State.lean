@@ -484,7 +484,14 @@ def performAccumulation
     fun acc (sid, ss) =>
       if ss.accumulation.1 + ss.accumulation.2.toNat != 0 then acc.insert sid ss
       else acc
-  { services := result.services
+  -- GP eq δ‡: update a_a = τ' for all services in K(S)
+  -- K(S) = services where G(s) + N(s) ≠ 0 (the accStats keys)
+  let servicesWithLastAcc := accStats.entries.foldl (init := result.services)
+    fun svcs (sid, _) =>
+      match svcs.lookup sid with
+      | some acct => svcs.insert sid { acct with parent := t' }
+      | none => svcs
+  { services := servicesWithLastAcc
     privileged := result.privileged
     pendingValidators := result.stagingKeys
     authQueue := result.authQueue
