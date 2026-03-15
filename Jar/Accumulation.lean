@@ -129,8 +129,8 @@ structure AccContext where
   timeslot : Timeslot
   /-- Next service ID for new service creation. -/
   nextServiceId : ServiceId
-  /-- "Regular" dimension state (for checkpoint): (accounts, opaqueData). -/
-  checkpoint : Option (Dict ServiceId ServiceAccount × Array (ByteArray × ByteArray))
+  /-- Checkpoint state: full partial state + opaque data (for OOG/panic revert). -/
+  checkpoint : Option (PartialState × Array (ByteArray × ByteArray))
   /-- Entropy η'₀ for fetch mode 1. -/
   entropy : Hash
   /-- Protocol configuration blob for fetch mode 0. -/
@@ -767,7 +767,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
 
   -- ===== checkpoint (17): Save accumulation checkpoint =====
   | 17 =>
-    let ctx' := { ctx with checkpoint := some (ctx.state.accounts, ctx.opaqueData) }
+    let ctx' := { ctx with checkpoint := some (ctx.state, ctx.opaqueData) }
     let regs' := setR7 regs gas'
     (mkResult regs' mem gas', ctx')
 
@@ -1438,8 +1438,8 @@ def accone (ps : PartialState) (serviceId : ServiceId)
             -- Panic/OOG/fault: revert to checkpoint (exceptional dimension)
             -- GP: y (exceptional context) is returned for non-halt exits
             match ctx'.checkpoint with
-            | some (savedAccounts, savedOpaque) =>
-              ({ ctx'.state with accounts := savedAccounts },
+            | some (savedState, savedOpaque) =>
+              (savedState,
                (#[] : Array DeferredTransfer), (none : Option Hash),
                (#[] : Array (ServiceId × ByteArray)), savedOpaque)
             | none =>
