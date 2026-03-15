@@ -141,8 +141,6 @@ structure AccContext where
   items : Array ByteArray
   /-- Opaque data for fallback lookups (storage/preimage from initial keyvals). -/
   opaqueData : Array (ByteArray × ByteArray)
-  /-- Sub-PVM machine set m: index → (program_blob, pc, memory). GP §B.4. -/
-  machines : Dict Nat (ByteArray × Nat × PVM.Memory) := Dict.empty
   /-- Segment export data (for export host call). -/
   exports : Array ByteArray := #[]
   /-- Debug: host call log. -/
@@ -167,7 +165,6 @@ instance : Inhabited AccContext where
     itemsBlob := ByteArray.empty
     items := #[]
     opaqueData := #[]
-    machines := Dict.empty
     exports := #[]
     hostCallLog := #[]
   }
@@ -584,298 +581,9 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
         let regs' := setR7 regs (UInt64.ofNat dataLen)
         (mkResult regs' mem gas', ctx)
 
-  -- ===== historical_lookup (6) =====
-  | 6 =>
-    -- Requires access to historical state; return NONE
-    let regs' := setR7 regs PVM.RESULT_NONE
-    (mkResult regs' mem gas', ctx)
-
-  -- ===== export (7): Export segment =====
-  | 7 =>
-    let regs' := setR7 regs PVM.RESULT_OK
-    (mkResult regs' mem gas', ctx)
-
-  -- ===== machine (8): Create nested PVM (GP Ω_M) =====
-  -- φ[7]=p_O (blob ptr), φ[8]=p_Z (blob len), φ[9]=i (initial PC)
-  -- Reads program blob from parent memory, deblobes it, creates new machine entry.
-  -- Returns: φ'[7] = machine index n, or HUH if deblob fails, or PANIC on page fault.
-  | 8 =>
-    let blobPtr := getReg regs 7
-    let blobLen := (getReg regs 8).toNat
-    let initPC := (getReg regs 9).toNat
-    -- Read program blob from parent memory
-    match PVM.readByteArray mem blobPtr blobLen with
-    | .ok blobBytes =>
-      -- Try to deblob the program
-      match PVM.deblob blobBytes with
-      | none =>
-        -- deblob failed → HUH
-        let regs' := setR7 regs PVM.RESULT_HUH
-        (mkResult regs' mem gas', ctx)
-      | some _ =>
-        -- Find smallest unused machine index
-        let n := Id.run do
-          let mut idx := 0
-          for _ in [:ctx.machines.size + 1] do
-            if (ctx.machines.lookup idx).isNone then return idx
-            idx := idx + 1
-          return idx
-        -- Create fresh sub-PVM memory: all pages inaccessible, all bytes zero
-        let totalPages := 2^32 / Z_P
-        let freshMem : PVM.Memory := {
-          pages := Dict.empty
-          access := Array.replicate totalPages PVM.PageAccess.inaccessible
-          heapTop := 0
-        }
-        -- Store machine: (program_blob, pc, memory)
-        let machines' := ctx.machines.insert n (blobBytes, initPC, freshMem)
-        let regs' := setR7 regs (UInt64.ofNat n)
-        (mkResult regs' mem gas', { ctx with machines := machines' })
-    | _ =>
-      -- Page fault on blob read → panic
-      (mkPanic regs mem gas', ctx)
-
-  -- ===== peek (9): Read nested PVM memory (GP Ω_P) =====
-  -- φ[7]=n (machine index), φ[8]=o (dest ptr in parent), φ[9]=s (source addr in machine), φ[10]=z (length)
-  -- Copies z bytes from machine n's memory at s to parent memory at o.
-  -- Returns: OK, WHO if machine doesn't exist, OOB if source not readable, PANIC if dest not writable.
-  | 9 =>
-    let n := (getReg regs 7).toNat
-    let o := getReg regs 8
-    let s := getReg regs 9
-    let z := (getReg regs 10).toNat
-    -- Check dest writable in parent memory FIRST (page fault → panic)
-    if z > 0 then
-      match PVM.checkWritable mem o z with
-      | .panic => (mkPanic regs mem gas', ctx)
-      | .fault _ => (mkPanic regs mem gas', ctx)
-      | .ok () =>
-        match ctx.machines.lookup n with
-        | none =>
-          let regs' := setR7 regs PVM.RESULT_WHO
-          (mkResult regs' mem gas', ctx)
-        | some (_, _, machMem) =>
-          -- Check source readable in machine memory
-          if z == 0 then
-            let regs' := setR7 regs PVM.RESULT_OK
-            (mkResult regs' mem gas', ctx)
-          else
-          match PVM.checkReadable machMem s z with
-          | .panic | .fault _ =>
-            let regs' := setR7 regs PVM.RESULT_OOB
-            (mkResult regs' mem gas', ctx)
-          | .ok () =>
-            -- Copy bytes from machine memory to parent memory
-            let bytes := Id.run do
-              let mut arr := ByteArray.emptyWithCapacity z
-              for i in [:z] do
-                arr := arr.push (machMem.getByte (s.toNat + i))
-              return arr
-            match PVM.writeByteArray mem o bytes with
-            | .ok mem' =>
-              let regs' := setR7 regs PVM.RESULT_OK
-              (mkResult regs' mem' gas', ctx)
-            | _ =>
-              (mkPanic regs mem gas', ctx)
-    else
-      -- z = 0: check machine exists
-      match ctx.machines.lookup n with
-      | none =>
-        let regs' := setR7 regs PVM.RESULT_WHO
-        (mkResult regs' mem gas', ctx)
-      | some _ =>
-        let regs' := setR7 regs PVM.RESULT_OK
-        (mkResult regs' mem gas', ctx)
-
-  -- ===== poke (10): Write nested PVM memory (GP Ω_O) =====
-  -- φ[7]=n (machine index), φ[8]=s (source ptr in parent), φ[9]=o (dest addr in machine), φ[10]=z (length)
-  -- Copies z bytes from parent memory at s to machine n's memory at o.
-  -- Returns: OK, WHO if machine doesn't exist, OOB if dest not writable in machine, PANIC if source not readable.
-  | 10 =>
-    let n := (getReg regs 7).toNat
-    let s := getReg regs 8
-    let o := getReg regs 9
-    let z := (getReg regs 10).toNat
-    -- Read source bytes from parent memory FIRST (page fault → panic)
-    if z > 0 then
-      match PVM.readByteArray mem s z with
-      | .ok srcBytes =>
-        match ctx.machines.lookup n with
-        | none =>
-          let regs' := setR7 regs PVM.RESULT_WHO
-          (mkResult regs' mem gas', ctx)
-        | some (prog, pc, machMem) =>
-          -- Check dest writable in machine memory
-          match PVM.checkWritable machMem o z with
-          | .panic | .fault _ =>
-            let regs' := setR7 regs PVM.RESULT_OOB
-            (mkResult regs' mem gas', ctx)
-          | .ok () =>
-            -- Write bytes into machine memory
-            let machMem' := Id.run do
-              let mut m := machMem
-              for i in [:z] do
-                m := m.setByte (o.toNat + i) (srcBytes.get! i)
-              return m
-            let machines' := ctx.machines.insert n (prog, pc, machMem')
-            let regs' := setR7 regs PVM.RESULT_OK
-            (mkResult regs' mem gas', { ctx with machines := machines' })
-      | _ =>
-        -- Page fault on source read → panic
-        (mkPanic regs mem gas', ctx)
-    else
-      -- z = 0: check machine exists
-      match ctx.machines.lookup n with
-      | none =>
-        let regs' := setR7 regs PVM.RESULT_WHO
-        (mkResult regs' mem gas', ctx)
-      | some _ =>
-        let regs' := setR7 regs PVM.RESULT_OK
-        (mkResult regs' mem gas', ctx)
-
-  -- ===== pages (11): Manage page permissions (GP Ω_Z) =====
-  -- φ[7]=n (machine index), φ[8]=p (start page), φ[9]=c (page count), φ[10]=r (access mode)
-  -- r: 0=inaccessible, 1=readable+zero, 2=writable+zero, 3=readable+keep, 4=writable+keep
-  | 11 =>
-    let n := (getReg regs 7).toNat
-    let p := (getReg regs 8).toNat
-    let c := (getReg regs 9).toNat
-    let r := (getReg regs 10).toNat
-    match ctx.machines.lookup n with
-    | none =>
-      let regs' := setR7 regs PVM.RESULT_WHO
-      (mkResult regs' mem gas', ctx)
-    | some (prog, pc, machMem) =>
-      -- Validate parameters
-      let totalPages := 2^32 / Z_P
-      if r > 4 || p < 16 || p + c >= totalPages then
-        let regs' := setR7 regs PVM.RESULT_HUH
-        (mkResult regs' mem gas', ctx)
-      else
-      -- For r > 2 (keep data), check that all target pages are NOT inaccessible
-      let pagesOk := if r > 2 then Id.run do
-        for i in [:c] do
-          let pi := p + i
-          if pi < machMem.access.size then
-            if machMem.access[pi]! == PVM.PageAccess.inaccessible then return false
-          else return false
-        return true
-      else true
-      if !pagesOk then
-        let regs' := setR7 regs PVM.RESULT_HUH
-        (mkResult regs' mem gas', ctx)
-      else
-        -- Update pages
-        let machMem' := Id.run do
-          let mut m := machMem
-          for i in [:c] do
-            let pi := p + i
-            -- Update access mode
-            let newAccess := match r with
-              | 0 => PVM.PageAccess.inaccessible
-              | 1 => PVM.PageAccess.readable
-              | 2 => PVM.PageAccess.writable
-              | 3 => PVM.PageAccess.readable
-              | _ => PVM.PageAccess.writable  -- r = 4
-            if pi < m.access.size then
-              m := { m with access := m.access.set! pi newAccess }
-            -- Zero page data if r < 3
-            if r < 3 then
-              let pageBase := pi * Z_P
-              let zeroPage := ByteArray.mk (Array.replicate Z_P 0)
-              m := { m with pages := m.pages.insert pi zeroPage }
-              let _ := pageBase  -- suppress warning
-          return m
-        let machines' := ctx.machines.insert n (prog, pc, machMem')
-        let regs' := setR7 regs PVM.RESULT_OK
-        (mkResult regs' mem gas', { ctx with machines := machines' })
-
-  -- ===== invoke (12): Execute nested PVM (GP Ω_K) =====
-  -- φ[7]=n (machine index), φ[8]=o (memory offset for gas+registers I/O, 112 bytes)
-  -- Reads 112 bytes from parent memory at o: 8 bytes gas + 13×8 bytes registers.
-  -- Runs sub-PVM Ψ(program, pc, gas, registers, machine_memory).
-  -- Writes back 112 bytes (new gas + new registers).
-  -- Updates machine state (memory, PC).
-  -- Returns: exit reason in r7, optional host call id in r8.
-  | 12 =>
-    let n := (getReg regs 7).toNat
-    let o := getReg regs 8
-    -- Read 112 bytes from parent memory (must be writable since we write back)
-    match PVM.checkWritable mem o 112 with
-    | .panic => (mkPanic regs mem gas', ctx)
-    | .fault _ => (mkPanic regs mem gas', ctx)
-    | .ok () =>
-      match PVM.readByteArray mem o 112 with
-      | .ok ioBytes =>
-        -- Check machine exists
-        match ctx.machines.lookup n with
-        | none =>
-          let regs' := setR7 regs PVM.RESULT_WHO
-          (mkResult regs' mem gas', ctx)
-        | some (progBlob, machPC, machMem) =>
-          -- Decode gas (first 8 bytes, LE)
-          let subGas : UInt64 := Id.run do
-            let mut v : Nat := 0
-            for i in [:8] do
-              v := v + (ioBytes.get! i).toNat * 2 ^ (8 * i)
-            return UInt64.ofNat v
-          -- Decode 13 registers (8 bytes each, LE)
-          let subRegs : PVM.Registers := Id.run do
-            let mut arr : Array UInt64 := #[]
-            for r in [:13] do
-              let mut v : Nat := 0
-              for i in [:8] do
-                v := v + (ioBytes.get! (8 + r * 8 + i)).toNat * 2 ^ (8 * i)
-              arr := arr.push (UInt64.ofNat v)
-            return arr
-          -- Deblob program and run sub-PVM
-          match PVM.deblob progBlob with
-          | none =>
-            -- Can't deblob (shouldn't happen if machine(8) validated it, but be safe)
-            let regs' := setR7 regs PVM.INVOKE_PANIC
-            (mkResult regs' mem gas', ctx)
-          | some prog =>
-            -- Run the sub-PVM: Ψ(program, pc, gas, registers, memory)
-            let result := PVM.run prog machPC subRegs machMem (Int64.ofUInt64 subGas)
-            -- Encode new gas + registers back to 112 bytes
-            let newGas := result.gas.toUInt64
-            let outBytes : ByteArray := Id.run do
-              let mut buf := ByteArray.emptyWithCapacity 112
-              -- Encode gas (8 bytes LE)
-              for i in [:8] do
-                buf := buf.push (UInt8.ofNat ((newGas.toNat / 2 ^ (8 * i)) % 256))
-              -- Encode 13 registers (8 bytes each LE)
-              for r in [:13] do
-                let rv := if r < result.registers.size then result.registers[r]! else 0
-                for i in [:8] do
-                  buf := buf.push (UInt8.ofNat ((rv.toNat / 2 ^ (8 * i)) % 256))
-              return buf
-            -- Write back 112 bytes to parent memory at o
-            match PVM.writeByteArray mem o outBytes with
-            | .ok mem' =>
-              -- Update machine state: new memory and new PC
-              let newPC := match result.exitReason with
-                | .hostCall _ => result.nextPC  -- advance past ecalli
-                | _ => result.lastPC            -- stay at exit instruction
-              let machines' := ctx.machines.insert n (progBlob, newPC, result.memory)
-              -- Set r7 = exit reason, r8 = host call id (if applicable)
-              let (r7val, r8val) := match result.exitReason with
-                | .halt => (PVM.INVOKE_HALT, getReg regs 8)
-                | .panic => (PVM.INVOKE_PANIC, getReg regs 8)
-                | .pageFault x => (PVM.INVOKE_FAULT, x)
-                | .hostCall h => (PVM.INVOKE_HOST, h)
-                | .outOfGas => (PVM.INVOKE_OOG, getReg regs 8)
-              let regs' := setR7 regs r7val
-              let regs' := setReg regs' 8 r8val
-              (mkResult regs' mem' gas', { ctx with machines := machines' })
-            | _ =>
-              -- Write-back page fault (shouldn't happen since we checked writable)
-              (mkPanic regs mem gas', ctx)
-      | _ =>
-        -- Page fault on IO bytes read → panic
-        (mkPanic regs mem gas', ctx)
-
-  -- 13 (expunge) is not implemented in PolkaJAM fuzzy test vectors; falls through to unknown.
+  -- Host calls 6-13 (historical_lookup, export, machine, peek, poke, pages, invoke,
+  -- expunge) are refine-only (GP eq:refinemutator). They are NOT available in the
+  -- accumulation context (GP eq:accinvocation) and fall through to the default WHAT.
 
   -- ===== bless (14): Set privileged services (GP ΩB) =====
   -- φ[7] = m (manager), φ[8] = a (assigners ptr, C × 4 bytes),
@@ -1766,7 +1474,33 @@ def groupTransfersByDest (transfers : Array DeferredTransfer) : Dict ServiceId (
       | none => #[]
     acc.insert t.dest (existing.push t)
 
+/-- R merge function from GP eq:accpar. R(o, a, b) = b if a == o, else a.
+    Selects the manager's change (a) unless it didn't change (a==o), in which case
+    the individual service's change (b) is used. -/
+private def privR (o a b : ServiceId) : ServiceId :=
+  if a == o then b else a
+
+/-- Privilege snapshot: captures the privilege-related fields from a PartialState
+    for the purpose of the GP R-merge after accumulation. -/
+private structure PrivSnapshot where
+  manager : ServiceId
+  assigners : Array ServiceId
+  designator : ServiceId
+  registrar : ServiceId
+  alwaysAccumulate : Dict ServiceId Gas
+  stagingKeys : Array ValidatorKey
+  authQueue : Array (Array Hash)
+
+private def privSnap (ps : PartialState) : PrivSnapshot :=
+  { manager := ps.manager, assigners := ps.assigners, designator := ps.designator,
+    registrar := ps.registrar, alwaysAccumulate := ps.alwaysAccumulate,
+    stagingKeys := ps.stagingKeys, authQueue := ps.authQueue }
+
 /-- Accumulate all affected services in parallel. GP §12 eq:accpar.
+    Services are accumulated sequentially for accounts, but before each service runs,
+    privileges are reset to the initial values. After all services complete, the
+    GP R-merge formula determines the final privileges from each service's individual
+    privilege changes.
     Returns (updated partial state, new deferred transfers, yield outputs, gas used). -/
 def accpar (ps : PartialState) (reports : Array WorkReport)
     (transfers : Array DeferredTransfer) (freeGasMap : Dict ServiceId Gas)
@@ -1780,16 +1514,29 @@ def accpar (ps : PartialState) (reports : Array WorkReport)
   -- Include always-accumulate services from freeGasMap (GP: f parameter in Δ*)
   let serviceIds := ((operandGroups.keys ++ transferGroups.keys ++ freeGasMap.keys).eraseDups).mergeSort (· < ·)
 
-  -- Accumulate each service
-  let (ps', allTransfers, allYields, gasMap, exitReasons, opaqueData') := serviceIds.foldl
-    (init := (ps, #[], #[], Dict.empty (K := ServiceId) (V := Gas), #[], opaqueData))
-    fun (ps, xfers, yields, gm, exits, od) sid =>
+  -- Save the initial privileges for R-merge.
+  let initPriv := privSnap ps
+
+  -- Accumulate each service sequentially for accounts.
+  -- Track each service's privilege snapshot for R-merge at the end.
+  let (ps', allTransfers, allYields, gasMap, exitReasons, opaqueData', perServicePriv) := serviceIds.foldl
+    (init := (ps, #[], #[], Dict.empty (K := ServiceId) (V := Gas), #[], opaqueData,
+             Dict.empty (K := ServiceId) (V := PrivSnapshot)))
+    fun (ps, xfers, yields, gm, exits, od, perSvc) sid =>
       let ops := match operandGroups.lookup sid with | some o => o | none => #[]
       let txs := match transferGroups.lookup sid with | some t => t | none => #[]
       let freeGas := match freeGasMap.lookup sid with | some g => g | none => 0
       let (itemsBlob, items) := buildItemsBlob ops txs
+      -- Snapshot privileges BEFORE this service runs, to detect changes.
+      let privBefore := privSnap ps
       let result := accone ps sid ops txs freeGas timeslot entropy configBlob
         itemsBlob items od
+      -- Capture this service's privilege changes as a delta from initPriv.
+      -- If this service changed any privilege field, its snapshot reflects the change.
+      -- Since services run sequentially and may see prior changes, we record
+      -- what the state looks like AFTER this service. The R-merge at the end will
+      -- select the appropriate service's version.
+      let svcPriv := privSnap result.postState
       let ps' := result.postState
       let od' := result.opaqueData
       let xfers' := xfers ++ result.deferredTransfers
@@ -1801,8 +1548,68 @@ def accpar (ps : PartialState) (reports : Array WorkReport)
         | some h => yields.push (sid, h)
         | none => yields
       let gm' := gm.insert sid (UInt64.ofNat result.gasUsed.toNat)
-      (ps', xfers', yields', gm', exits', od')
-  (ps', allTransfers, allYields, gasMap, exitReasons, opaqueData')
+      -- Only record privilege snapshot if this service actually changed privileges
+      -- (to avoid cascading sequential changes polluting the per-service map).
+      -- A service changed privileges if any privilege field differs from before.
+      let changed := privBefore.manager != svcPriv.manager ||
+        privBefore.designator != svcPriv.designator ||
+        privBefore.registrar != svcPriv.registrar ||
+        privBefore.assigners != svcPriv.assigners ||
+        privBefore.alwaysAccumulate.keys != svcPriv.alwaysAccumulate.keys ||
+        privBefore.stagingKeys.size != svcPriv.stagingKeys.size ||
+        privBefore.authQueue.size != svcPriv.authQueue.size
+      let perSvc' := if changed then perSvc.insert sid svcPriv else perSvc
+      (ps', xfers', yields', gm', exits', od', perSvc')
+
+  -- GP privilege R-merge: privileges are determined by specific services.
+  -- Helper: get a service's privilege snapshot, or initial if not accumulated.
+  let deltaPriv (s : ServiceId) : PrivSnapshot :=
+    match perServicePriv.lookup s with
+    | some p => p
+    | none => initPriv
+
+  let m := initPriv.manager
+  let v := initPriv.designator
+  let r := initPriv.registrar
+
+  -- e* = Delta(m)_e — manager service's result
+  let eStar := deltaPriv m
+
+  -- (m', z') from manager's result
+  let m' := eStar.manager
+  let z' := eStar.alwaysAccumulate
+
+  -- a'_c = R(a_c, (e*_a)_c, ((Delta(a_c)_e)_a)_c) for each core c
+  let a' : Array ServiceId := Id.run do
+    let mut arr := Array.empty
+    for c in [:initPriv.assigners.size] do
+      let a_c := initPriv.assigners[c]!
+      let eStar_a_c := if c < eStar.assigners.size then eStar.assigners[c]! else a_c
+      let delta_ac := deltaPriv a_c
+      let delta_ac_a_c := if c < delta_ac.assigners.size then delta_ac.assigners[c]! else a_c
+      arr := arr.push (privR a_c eStar_a_c delta_ac_a_c)
+    return arr
+
+  -- v' = R(v, e*_v, (Delta(v)_e)_v)
+  let deltaV := deltaPriv v
+  let v' := privR v eStar.designator deltaV.designator
+
+  -- r' = R(r, e*_r, (Delta(r)_e)_r)
+  let deltaR := deltaPriv r
+  let r' := privR r eStar.registrar deltaR.registrar
+
+  -- Apply privilege merge to the sequentially-accumulated account state.
+  -- authQueue and stagingKeys are correctly handled by sequential accumulation
+  -- (assign and designate host calls), so we don't override them here.
+  let psFinal : PartialState := { ps' with
+    manager := m'
+    assigners := a'
+    designator := v'
+    registrar := r'
+    alwaysAccumulate := z'
+  }
+
+  (psFinal, allTransfers, allYields, gasMap, exitReasons, opaqueData')
 
 -- ============================================================================
 -- accseq — Sequential Accumulation — GP eq:accseq
