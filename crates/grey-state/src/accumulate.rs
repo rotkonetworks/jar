@@ -1842,9 +1842,10 @@ fn host_provide(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
         }
     }
 
-    // HUH if a_l[(H(i), z)] ≠ [] — preimage_info entry has non-empty timeslots
-    if let Some(ts) = account.preimage_info.get(&key) {
-        if !ts.is_empty() {
+    // HUH if a_l[(H(i), z)] not present or ≠ [] — must be solicited (empty timeslots)
+    match account.preimage_info.get(&key) {
+        Some(ts) if ts.is_empty() => {} // OK: solicited
+        _ => {
             pvm.set_reg(7, HOST_HUH);
             return true;
         }
