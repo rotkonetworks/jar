@@ -457,9 +457,11 @@ fn accumulate_single_service(
     }
     let code_blob = code_blob.unwrap();
 
+
     // Run PVM
     let (final_context, gas_used) =
         run_accumulate_pvm(config, &code_blob, total_gas, &args, regular, exceptional, timeslot, entropy, &service_fetch_ctx);
+
 
     ServiceAccResult {
         accounts: final_context.accounts,
@@ -1594,6 +1596,20 @@ fn host_query(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
     hash.copy_from_slice(&hash_data);
     let hash = Hash(hash);
 
+    // Promote preimage_info from opaque if needed
+    if let Some(account) = ctx.accounts.get_mut(&ctx.service_id) {
+        let key = (hash, z);
+        if !account.preimage_info.contains_key(&key) {
+            let state_key = grey_merkle::state_serial::compute_preimage_info_state_key(
+                ctx.service_id, &hash, z,
+            );
+            if let Some(v) = account.opaque_data.remove(&state_key) {
+                let timeslots = decode_preimage_info_timeslots(&v);
+                account.preimage_info.insert(key, timeslots);
+            }
+        }
+    }
+
     let account = ctx.accounts.get(&ctx.service_id);
     if let Some(account) = account {
         if let Some(timeslots) = account.preimage_info.get(&(hash, z)) {
@@ -2132,10 +2148,10 @@ pub fn process_accumulate(
         slot_index,
     );
 
-    // Step 3: Compute gas budget (eq 12.25)
+    // Step 3: Compute gas budget (eq 12.25): g = max(G_T, G_A × C + Σχ_Z)
     let always_gas: Gas = state.privileges.always_acc.iter().map(|(_, g)| *g).sum();
-    let gas_budget = (config.gas_total_accumulation + always_gas)
-        .max(config.gas_total_accumulation);
+    let ga_times_c = grey_types::constants::GAS_ACCUMULATE * config.core_count as u64;
+    let gas_budget = config.gas_total_accumulation.max(ga_times_c + always_gas);
 
     // Build shared fetch context (items are per-service, built in accumulate_single_service)
     let fetch_ctx = FetchContext {
