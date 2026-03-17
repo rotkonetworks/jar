@@ -96,6 +96,22 @@ inductive MemoryModel where
   | linear
   deriving BEq, Inhabited
 
+/-- PVM gas metering model. -/
+inductive GasModel where
+  /-- GP v0.7.2: 1 gas per instruction. -/
+  | perInstruction
+  /-- GP v0.8.0: per-basic-block pipeline simulation cost. -/
+  | basicBlock
+  deriving BEq, Inhabited
+
+/-- PVM heap management model. -/
+inductive HeapModel where
+  /-- GP v0.7.2: sbrk instruction (opcode 101). -/
+  | sbrk
+  /-- GP v0.8.0: grow_heap hostcall (hostcall 1). -/
+  | growHeap
+  deriving BEq, Inhabited
+
 /-- JamConfig: provides protocol configuration and validity proofs.
     Used by struct types and Fin-based index aliases.
     Extended by `JamVariant` (in `Jar/Variant.lean`) to add PVM function fields. -/
@@ -106,6 +122,12 @@ class JamConfig where
   valid : Params.Valid config
   /-- PVM memory layout for program initialization. -/
   memoryModel : MemoryModel := .segmented
+  /-- PVM gas metering strategy. -/
+  gasModel : GasModel := .perInstruction
+  /-- PVM heap management: sbrk instruction or grow_heap hostcall. -/
+  heapModel : HeapModel := .sbrk
+  /-- Hostcall numbering version: 0 = v0.7.2, 1 = v0.8.0 (+1 shift for grow_heap). -/
+  hostcallVersion : Nat := 0
 
 -- ============================================================================
 -- Standard Configurations

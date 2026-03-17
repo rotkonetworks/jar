@@ -1,6 +1,7 @@
 import Jar.PVM
 import Jar.PVM.Decode
 import Jar.PVM.Memory
+import Jar.Types.Config
 
 /-!
 # PVM Instruction Execution — Appendix A
@@ -226,7 +227,7 @@ def ashr32 (x : UInt64) (s : Nat) : UInt64 :=
 /-- Execute one PVM instruction. GP Appendix A.
     Takes current state, returns step result. -/
 def executeStep (prog : ProgramBlob) (pc : Nat) (regs : Registers) (mem : Memory)
-    : StepResult :=
+    (heapModel : HeapModel := .sbrk) : StepResult :=
   let code := prog.code
   let skip := skipDistance prog.bitmask pc
   let npc := nextPC pc skip
@@ -237,9 +238,10 @@ def executeStep (prog : ProgramBlob) (pc : Nat) (regs : Registers) (mem : Memory
   if !bitmaskValid then .panic
   else
   match opcode with
-  -- ========== No-arg (0-1) ==========
+  -- ========== No-arg (0-2) ==========
   | 0 => .panic  -- trap
   | 1 => .continue npc regs mem  -- fallthrough
+  | 2 => .continue npc regs mem  -- unlikely (v0.8.0: gas hint, no semantic effect)
 
   -- ========== One-immediate (10) ==========
   | 10 =>  -- ecalli: host call
@@ -349,11 +351,13 @@ def executeStep (prog : ProgramBlob) (pc : Nat) (regs : Registers) (mem : Memory
     -- (move_reg tracing removed)
     .continue npc (setReg regs rD (getReg regs rA)) mem
 
-  | 101 =>  -- sbrk
-    let rD := regA code pc
-    let rA := regB code pc
-    let (mem', addr) := sbrk mem (getReg regs rA)
-    .continue npc (setReg regs rD addr) mem'
+  | 101 =>  -- sbrk (v0.7.2 only; removed in v0.8.0)
+    if heapModel == .growHeap then .panic
+    else
+      let rD := regA code pc
+      let rA := regB code pc
+      let (mem', addr) := sbrk mem (getReg regs rA)
+      .continue npc (setReg regs rD addr) mem'
 
   | 102 => let rD := regA code pc; let rA := regB code pc
     .continue npc (setReg regs rD (popcount64 (getReg regs rA))) mem
