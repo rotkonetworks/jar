@@ -316,6 +316,11 @@ private def parseKeyvals (j : Json) : Except String (Array (ByteArray × ByteArr
 inductive TestResult where
   | pass | fail | skip
 
+/-- Check JAR_VERBOSE environment variable for verbose debug output. -/
+private def isVerbose : IO Bool := do
+  let v ← IO.getEnv "JAR_VERBOSE"
+  return v.isSome
+
 /-- Run a single block test. Returns pass/fail/skip. -/
 def runBlockTest [JamConfig] (inputPath : System.FilePath) : IO TestResult := do
   let name := inputPath.fileName.getD inputPath.toString
@@ -351,14 +356,6 @@ def runBlockTest [JamConfig] (inputPath : System.FilePath) : IO TestResult := do
   let (state, opaqueData) ← match stateOpt with
     | some (s, od) => pure (s, od)
     | none =>
-      -- Diagnose: try deserializing each KV individually
-      for (key, value) in keyvals do
-        let idx := key.get! 0
-        if idx >= 1 && idx <= 16 then
-          -- Try individual component deserialization
-          let ok := (@StateSerialization.deserializeState _ #[(key, value)]).isSome
-          if !ok then
-            IO.println s!"  DEBUG deser FAIL on idx={idx} val_len={value.size}"
       IO.println s!"  FAIL {name}: failed to deserialize pre_state from keyvals"
       return .fail
 
@@ -388,32 +385,6 @@ def runBlockTest [JamConfig] (inputPath : System.FilePath) : IO TestResult := do
   -- Run state transition, skipping seal/VRF verification for now
   -- Pass opaque data so PVM accumulation can access storage/preimage entries
   let result := @stateTransitionNoSealCheck _ state block opaqueData
-  -- If transition fails, diagnose which check failed
-  if result.isNone then
-    let h := block.header
-    let parentOk : Bool := if state.recent.blocks.size = 0 then true
-      else
-        let idx := state.recent.blocks.size - 1
-        if hlt : idx < state.recent.blocks.size then
-          h.parent == state.recent.blocks[idx].headerHash
-        else true
-    let timeslotOk : Bool := decide (h.timeslot.toNat > state.timeslot.toNat)
-    let authorOk : Bool := decide (h.authorIndex.val < V)
-    let epochChange := @isEpochChange _ state.timeslot h.timeslot
-    let epochMarkerOk : Bool := match h.epochMarker with
-      | some _ => epochChange
-      | none => epochChange == false
-    -- Check seal verification
-    let sealOk : Bool :=
-      if h.authorIndex.val < state.currentValidators.size then
-        let authorKey := state.currentValidators[h.authorIndex.val]!
-        let unsignedHeader := Codec.encodeUnsignedHeader h
-        Crypto.bandersnatchVerify authorKey.bandersnatch
-          Crypto.ctxTicketSeal unsignedHeader h.sealSig
-      else false
-    IO.println s!"  DEBUG {name}: parent={parentOk} timeslot={timeslotOk} author={authorOk} epochMarker={epochMarkerOk} seal={sealOk}"
-    IO.println s!"    header.slot={h.timeslot.toNat} state.timeslot={state.timeslot.toNat} authorIdx={h.authorIndex.val}"
-
   match result with
   | some (postState, exitReasons, remainingOpaque) =>
     if isError then
@@ -455,65 +426,33 @@ def runBlockTest [JamConfig] (inputPath : System.FilePath) : IO TestResult := do
         IO.println s!"  FAIL {name}: post_state root mismatch"
         IO.println s!"    expected: {bytesToHex expectedPostRoot.data}"
         IO.println s!"    got:      {bytesToHex computedRoot.data}"
-        -- Compare individual KVs with expected post_state keyvals
-        match postStateJson.getObjVal? "keyvals" with
-        | .ok kvJson =>
-          match parseKeyvals kvJson with
-          | .ok expectedKvs =>
-            let ourKvs := allPostKvs
-            -- Show first few diffs (compare by key index)
-            let mut diffCount := 0
-            for i in [:min expectedKvs.size ourKvs.size] do
-              let (ek, ev) := expectedKvs[i]!
-              let (ok, ov) := ourKvs[i]!
-              if ek != ok then
-                if diffCount < 3 then
-                  IO.println s!"    kv[{i}] KEY: exp={bytesToHex ek |>.take 16}.. got={bytesToHex ok |>.take 16}.."
-                diffCount := diffCount + 1
-              else if ev != ov then
-                if diffCount < 3 then
-                  let idx := ek.get! 0
-                  IO.println s!"    kv[{i}] idx={idx} VAL: exp_len={ev.size} got_len={ov.size}"
-                  for j in [:min ev.size ov.size] do
-                    if ev.get! j != ov.get! j then
-                      IO.println s!"      first diff at byte {j}: exp={ev.get! j} got={ov.get! j}"
-                      -- Show a few more diff bytes
-                      for k in [j+1:min (j+8) (min ev.size ov.size)] do
-                        if ev.get! k != ov.get! k then
-                          IO.println s!"      byte {k}: exp={ev.get! k} got={ov.get! k}"
-                      break
-                  if idx == 255 then
-                    let sid := StateSerialization.extractServiceIdFromDataKey ek
-                    IO.println s!"      sid={sid} key={bytesToHex ek}"
-                  else if idx >= 17 then
-                    -- Service data key: show SID and key hex
-                    let sid := StateSerialization.extractServiceIdFromDataKey ek
-                    IO.println s!"      sid={sid} key={bytesToHex ek}"
-                diffCount := diffCount + 1
-            if diffCount > 3 then
-              IO.println s!"    ... {diffCount - 3} more diffs"
-            IO.println s!"    expected {expectedKvs.size} kvs, got {ourKvs.size} kvs"
-            -- Show exit reasons for accumulated services
-            for (sid3, reason3) in exitReasons do
-              if reason3.length > 0 then
-                let short3 := if reason3.length > 20000 then String.mk (reason3.toList.take 20000) ++ "..." else reason3
-                IO.println s!"    acc svc={sid3}: {short3}"
-            -- Extra keys in our output
-            let preKeyvals := keyvals
-            for (k, v) in ourKvs do
-              if !expectedKvs.any (fun (ek, _) => ek == k) then
-                let sid := StateSerialization.extractServiceIdFromDataKey k
-                let inPre := preKeyvals.any (fun (pk, _) => pk == k)
-                let inPreVal := preKeyvals.findSome? (fun (pk, pv) => if pk == k then some pv else none)
-                let preValSame := match inPreVal with | some pv => pv == v | none => false
-                IO.println s!"    EXTRA KEY: {bytesToHex k} sid={sid} val_len={v.size} inPre={inPre} preValSame={preValSame} (opaque={filteredOpaque.any (fun (ok, _) => ok == k)})"
-            -- Missing keys from expected
-            for (k, v) in expectedKvs do
-              if !ourKvs.any (fun (ok, _) => ok == k) then
-                let sid := StateSerialization.extractServiceIdFromDataKey k
-                IO.println s!"    MISSING KEY: {bytesToHex k} sid={sid} val_len={v.size}"
+        if (← isVerbose) then
+          match postStateJson.getObjVal? "keyvals" with
+          | .ok kvJson =>
+            match parseKeyvals kvJson with
+            | .ok expectedKvs =>
+              IO.println s!"    expected {expectedKvs.size} kvs, got {allPostKvs.size} kvs"
+              let mut diffCount := 0
+              for i in [:min expectedKvs.size allPostKvs.size] do
+                let (ek, ev) := expectedKvs[i]!
+                let (ok, ov) := allPostKvs[i]!
+                if ek != ok then
+                  if diffCount < 5 then
+                    IO.println s!"    kv[{i}] KEY: exp={bytesToHex ek |>.take 16}.. got={bytesToHex ok |>.take 16}.."
+                  diffCount := diffCount + 1
+                else if ev != ov then
+                  if diffCount < 5 then
+                    let idx := ek.get! 0
+                    IO.println s!"    kv[{i}] idx={idx} VAL: exp_len={ev.size} got_len={ov.size}"
+                  diffCount := diffCount + 1
+              if diffCount > 5 then
+                IO.println s!"    ... {diffCount - 5} more diffs"
+              for (sid3, reason3) in exitReasons do
+                if reason3.length > 0 then
+                  let short3 := if reason3.length > 200 then (reason3.toList.take 200 |> String.ofList) ++ "..." else reason3
+                  IO.println s!"    acc svc={sid3}: {short3}"
+            | .error _ => pure ()
           | .error _ => pure ()
-        | .error _ => pure ()
         return .fail
   | none =>
     if isError then
@@ -725,18 +664,6 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
         let computedRoot := Merkle.trieRoot (allPostKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
         if computedRoot == expectedPostRoot then
           IO.println s!"  PASS {name}"
-          -- Print exit reasons for blocks with accumulation
-          if exitReasons.size > 0 then
-            for (sid, reason) in exitReasons do
-              -- Show full reason for target service with instruction trace, truncate others
-              if reason.length > 200 then
-                IO.println s!"    acc svc={sid}: {reason}"
-              else
-                let short := if reason.length > 100 then (reason.toList.take 100 |> String.mk) ++ "..." else reason
-                IO.println s!"    acc svc={sid}: {short}"
-            for (sid, acct) in postState.services.entries.toArray do
-              IO.println s!"    svc {sid}: storage={acct.storage.size} items={acct.itemCount} footprint={acct.totalFootprint}"
-          pure ()
           passed := passed + 1
           currentState := some (postState, filteredOpaque)
           -- Save post-state keyed by header hash for fork handling
@@ -747,152 +674,27 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
           IO.println s!"    expected: {bytesToHex expectedPostRoot.data}"
           IO.println s!"    got:      {bytesToHex computedRoot.data}"
           IO.println s!"    total KVs: {allPostKvs.size} (serialized={postKvs.size} opaque={filteredOpaque.size})"
-          -- Debug: when we have extra KVs, find which ones are not in expected
-          match postStateJson.getObjVal? "keyvals" with
-          | .ok kvJson2 =>
-            match parseKeyvals kvJson2 with
-            | .ok expectedKvs2 =>
-              let expKeySet := expectedKvs2.map Prod.fst
-              let ourKeySet := allPostKvs.map Prod.fst
-              -- Extra keys in our output
-              for (k, _v) in allPostKvs do
-                if !expKeySet.any (· == k) then
-                  let sid := StateSerialization.extractServiceIdFromDataKey k
-                  -- Determine entry type from hash arg
-                  IO.println s!"    EXTRA KEY: {bytesToHex k} sid={sid}"
-              -- Missing keys from expected
-              for (k, _v) in expectedKvs2 do
-                if !ourKeySet.any (· == k) then
-                  let sid := StateSerialization.extractServiceIdFromDataKey k
-                  IO.println s!"    MISSING KEY: {bytesToHex k} sid={sid}"
-              -- Show host call log from exit reasons
-              for (sid2, reason) in exitReasons do
-                if reason.length > 0 then
-                  IO.println s!"    acc svc={sid2}: {reason}"
+          if (← isVerbose) then
+            match postStateJson.getObjVal? "keyvals" with
+            | .ok kvJson2 =>
+              match parseKeyvals kvJson2 with
+              | .ok expectedKvs2 =>
+                let expKeySet := expectedKvs2.map Prod.fst
+                let ourKeySet := allPostKvs.map Prod.fst
+                for (k, _v) in allPostKvs do
+                  if !expKeySet.any (· == k) then
+                    let sid := StateSerialization.extractServiceIdFromDataKey k
+                    IO.println s!"    EXTRA KEY: {bytesToHex k} sid={sid}"
+                for (k, _v) in expectedKvs2 do
+                  if !ourKeySet.any (· == k) then
+                    let sid := StateSerialization.extractServiceIdFromDataKey k
+                    IO.println s!"    MISSING KEY: {bytesToHex k} sid={sid}"
+                for (sid2, reason) in exitReasons do
+                  if reason.length > 0 then
+                    let short := if reason.length > 200 then (reason.toList.take 200 |> String.ofList) ++ "..." else reason
+                    IO.println s!"    acc svc={sid2}: {short}"
+              | .error _ => pure ()
             | .error _ => pure ()
-          | .error _ => pure ()
-          if false then
-            let preSerKvs := (@StateSerialization.serializeState _ state).map fun (k, v) => (k.data, v)
-            let preOpaqueKvs := (preSerKvs ++ opaqueData).qsort fun (k1, _) (k2, _) => byteArrayLt k1 k2
-            let preMap := preOpaqueKvs.foldl (init := Dict.empty (K := ByteArray) (V := ByteArray))
-              fun acc (k, v) => acc.insert k v
-            -- Which indices changed?
-            let mut changedIdxs : Array Nat := #[]
-            for (k, v) in allPostKvs do
-              match preMap.lookup k with
-              | some preV => if preV != v then
-                  let idx := k.get! 0 |>.toNat
-                  if !changedIdxs.contains idx then changedIdxs := changedIdxs.push idx
-              | none => pure ()
-            IO.println s!"    changed: {changedIdxs.toList}"
-            -- Revert all EXCEPT service data (idx > 16)
-            let svcOnlyKvs := allPostKvs.map fun (k, v) =>
-              if k.get! 0 <= 16 then
-                match preMap.lookup k with
-                | some preV => (k, preV)
-                | none => (k, v)
-              else (k, v)
-            let svcOnlyRoot := Merkle.trieRoot (svcOnlyKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
-            if svcOnlyRoot == expectedPostRoot then
-              IO.println s!"    FIX: all global components wrong, service data correct"
-            -- Revert all EXCEPT global (idx <= 16)
-            let globalOnlyKvs := allPostKvs.map fun (k, v) =>
-              if k.get! 0 > 16 then
-                match preMap.lookup k with
-                | some preV => (k, preV)
-                | none => (k, v)
-              else (k, v)
-            let globalOnlyRoot := Merkle.trieRoot (globalOnlyKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
-            if globalOnlyRoot == expectedPostRoot then
-              IO.println s!"    FIX: service data wrong, global components correct"
-            -- Revert ALL to verify pre-state root
-            let allRevertKvs := allPostKvs.map fun (k, v) =>
-              match preMap.lookup k with
-              | some preV => (k, preV)
-              | none => (k, v)
-            let allRevertRoot := Merkle.trieRoot (allRevertKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
-            let preRoot := Merkle.trieRoot (preOpaqueKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
-            IO.println s!"    preRoot: {bytesToHex preRoot.data |>.take 16}.. allRevert: {bytesToHex allRevertRoot.data |>.take 16}.."
-            -- Try reverting all 7 global + service metadata
-            let all8Kvs := allPostKvs.map fun (k, v) =>
-              let idx := k.get! 0 |>.toNat
-              if idx == 3 || idx == 6 || idx == 10 || idx == 11 || idx == 13 || idx == 15 || idx == 16 || idx == 255 then
-                match preMap.lookup k with
-                | some preV => (k, preV)
-                | none => (k, v)
-              else (k, v)
-            let all8Root := Merkle.trieRoot (all8Kvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
-            IO.println s!"    revert all 8 changed: {bytesToHex all8Root.data |>.take 16}.. (pre: {bytesToHex preRoot.data |>.take 16}..)"
-            -- Try keeping only small subsets of changed components
-            -- Keep timeslot + service metadata + entropy (should be trivially correct)
-            let trivialKvs := allPostKvs.map fun (k, v) =>
-              let idx := k.get! 0 |>.toNat
-              if idx == 11 || idx == 255 || idx == 6 then (k, v)
-              else match preMap.lookup k with
-                | some preV => (k, preV)
-                | none => (k, v)
-            let trivialRoot := Merkle.trieRoot (trivialKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
-            -- Keep everything except statistics (idx=13)
-            let noStatsKvs := allPostKvs.map fun (k, v) =>
-              if k.get! 0 == 13 then
-                match preMap.lookup k with
-                | some preV => (k, preV)
-                | none => (k, v)
-              else (k, v)
-            let noStatsRoot := Merkle.trieRoot (noStatsKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
-            IO.println s!"    trivial(11,255,6): {bytesToHex trivialRoot.data |>.take 16}.."
-            IO.println s!"    no stats(~13): {bytesToHex noStatsRoot.data |>.take 16}.."
-            IO.println s!"    expected: {bytesToHex expectedPostRoot.data |>.take 16}.."
-            -- Check if maybe some component that should be UNCHANGED is wrong
-            -- If all changes are right, root should match expected
-            -- If a MISSING change exists, we need to find which unchanged idx should change
-            -- Try: apply ONLY idx=11 change (trivially correct)
-            let onlyTimeslotKvs := allPostKvs.map fun (k, v) =>
-              if k.get! 0 == 11 then (k, v)  -- keep timeslot
-              else match preMap.lookup k with
-                | some preV => (k, preV)
-                | none => (k, v)
-            let onlyTsRoot := Merkle.trieRoot (onlyTimeslotKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
-            -- Hmm, what if idx=1 (authPool) SHOULD change but isn't?
-            -- Check if expected root = pre-state with ONLY timeslot changed
-            IO.println s!"    only timeslot: {bytesToHex onlyTsRoot.data |>.take 16}.."
-            -- Dump statistics bytes to find exact differences
-            for (k, v) in allPostKvs do
-              if k.get! 0 == 13 then
-                match preMap.lookup k with
-                | some preV =>
-                  -- Show byte differences in statistics
-                  let diffBytes := Id.run do
-                    let mut diffs : Array (Nat × Nat × Nat) := #[]  -- (pos, pre, post)
-                    for i in [:min preV.size v.size] do
-                      if preV.get! i != v.get! i then
-                        diffs := diffs.push (i, preV.get! i |>.toNat, v.get! i |>.toNat)
-                    return diffs
-                  IO.println s!"    stats diffs ({diffBytes.size} bytes differ, pre={preV.size} post={v.size}):"
-                  for (pos, pre, post) in diffBytes.toSubarray 0 (min 20 diffBytes.size) do
-                    IO.println s!"      byte {pos}: {pre} -> {post}"
-                | none => pure ()
-          for (sid, reason) in exitReasons do
-            IO.println s!"    acc svc={sid}: {reason}"
-          -- Debug: show service storage state
-          for (sid, acct) in postState.services.entries.toArray do
-            IO.println s!"    svc {sid}: storage={acct.storage.size} preimages={acct.preimages.size} preimageInfo={acct.preimageInfo.size} bal={acct.balance} parentSvc={acct.parentServiceId} creationSlot={acct.creationSlot} footprint={acct.totalFootprint} lastAcc={acct.lastAccumulation} itemCount={acct.itemCount} gratis={acct.gratis}"
-          -- Debug: show serialized component sizes and hashes
-          for (k, v) in allPostKvs do
-            let idx := k.get! 0
-            if idx >= 1 && idx <= 16 || idx == 255 then
-              let h := Crypto.blake2b v
-              IO.println s!"    idx={idx} val_len={v.size} hash={bytesToHex h.data |>.take 16}.."
-          -- Debug: show queue state
-          let totalQ := postState.accQueue.foldl (init := 0) fun acc s => acc + s.size
-          if totalQ > 0 then
-            IO.println s!"    accQueue: {totalQ} entries"
-            for i in [:postState.accQueue.size] do
-              let slot := postState.accQueue[i]!
-              for (wr, deps) in slot do
-                let pkgHex := bytesToHex wr.availSpec.packageHash.data |>.take 12
-                IO.println s!"      [{i}] pkg={pkgHex}.. deps={deps.size} digests={wr.digests.size}"
-          pure ()
           failed := failed + 1
           -- Continue threading to see if subsequent blocks also fail
           currentState := some (postState, filteredOpaque)
