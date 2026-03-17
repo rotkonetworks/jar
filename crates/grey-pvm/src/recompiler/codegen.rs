@@ -195,10 +195,12 @@ impl Compiler {
                 self.asm.bind_label(label);
             }
 
-            // Gas metering at gas-block boundaries (actual control flow, not per-instruction)
-            let is_gas_block = (pc < self.gas_block_starts.len()) && self.gas_block_starts[pc];
-            if is_gas_block {
-                self.emit_gas_check(pc, code, bitmask);
+            // Gas metering: charge 1 gas per instruction (matching interpreter)
+            if pc < bitmask.len() && bitmask[pc] == 1 {
+                let stub_label = self.asm.new_label();
+                self.asm.sub_mem64_imm32(CTX, CTX_GAS, 1);
+                self.asm.jcc_label(Cc::S, stub_label);
+                self.oog_stubs.push((stub_label, pc as u32));
             }
 
             // Decode instruction
