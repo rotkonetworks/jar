@@ -215,20 +215,19 @@ impl Pvm {
         let opcode = match opcode {
             Some(op) => op,
             None => {
-                // Invalid opcode or bitmask: treat as trap
-                self.gas = self.gas.saturating_sub(1);
                 return Some(ExitReason::Panic);
             }
         };
 
-        // Per-instruction gas metering (v0.7.2: ϱ' = ϱ - ϱ_Δ where ϱ_Δ = 1).
-        // All instructions cost ϱΔ = 1 gas per GP instruction table (including ecalli).
-        // The host-call handler additionally charges g = 10 for ecalli.
-        let gas_cost: u64 = 1;
-        if self.gas < gas_cost {
-            return Some(ExitReason::OutOfGas);
+        // Per-basic-block gas metering (JAR v0.8.0).
+        // Gas is charged at block entry using pipeline-simulated cost.
+        if pc < self.basic_block_starts.len() && self.basic_block_starts[pc] {
+            let block_cost = self.block_gas_costs[pc];
+            if self.gas < block_cost {
+                return Some(ExitReason::OutOfGas);
+            }
+            self.gas -= block_cost;
         }
-        self.gas -= gas_cost;
 
         // Collect trace if enabled
         if self.tracing_enabled {
@@ -1423,12 +1422,14 @@ impl Pvm {
             // Copy the decoded instruction (avoids borrow conflict with &mut self)
             let inst = *unsafe { self.decoded_insts.get_unchecked(idx as usize) };
 
-            // Per-instruction gas charging (ϱΔ = 1 per instruction)
-            if self.gas == 0 {
-                self.pc = inst.pc;
-                return (ExitReason::OutOfGas, initial_gas);
+            // Per-basic-block gas charging (JAR v0.8.0)
+            if inst.bb_gas_cost > 0 {
+                if self.gas < inst.bb_gas_cost {
+                    self.pc = inst.pc;
+                    return (ExitReason::OutOfGas, initial_gas - self.gas);
+                }
+                self.gas -= inst.bb_gas_cost;
             }
-            self.gas -= 1;
 
             // Fast-path execution using flat operands (no Args enum matching).
             let ra = inst.ra as usize;
@@ -1709,65 +1710,18 @@ pub fn compute_basic_block_starts(code: &[u8], bitmask: &[u8]) -> Vec<bool> {
     starts
 }
 
-/// Compute the gas cost for each basic block.
+/// Compute the gas cost for each basic block using pipeline simulation (JAR v0.8.0).
 ///
-/// Gas is charged per basic block at block entry. The cost of a block is
-/// the sum of all instruction gas costs within it (each instruction costs 1).
-/// Returns a vector indexed by code offset; only entries where
-/// basic_block_starts[i]==true are meaningful.
+/// Gas is charged per basic block at block entry. The cost is computed by
+/// the CPU pipeline simulation: max(simulated_cycles - 3, 1).
 fn compute_block_gas_costs(code: &[u8], bitmask: &[u8], basic_block_starts: &[bool]) -> Vec<u64> {
     let len = code.len();
     let mut costs = vec![0u64; len];
-
-    if len == 0 {
-        return costs;
-    }
-
-    // Helper to compute skip(i) for a given position
-    let skip_at = |i: usize| -> usize {
-        for j in 0..25 {
-            let idx = i + 1 + j;
-            let bit = if idx < bitmask.len() { bitmask[idx] } else { 1 };
-            if bit == 1 {
-                return j;
-            }
-        }
-        24
-    };
-
-    // For each basic block start, count instructions until the next block start
-    // (or end of code). Each instruction costs 1 gas.
-    let mut i = 0;
-    while i < len {
-        if basic_block_starts[i] {
-            // Count instructions in this block
-            let block_start = i;
-            let mut count = 0u64;
-            let mut pos = i;
-            loop {
-                if pos >= len {
-                    break;
-                }
-                if pos < bitmask.len() && bitmask[pos] == 1 {
-                    // This is an instruction start
-                    if pos != block_start && basic_block_starts[pos] {
-                        // Reached next basic block
-                        break;
-                    }
-                    count += 1;
-                    let s = skip_at(pos);
-                    pos = pos + 1 + s;
-                } else {
-                    pos += 1;
-                }
-            }
-            costs[block_start] = count;
-            i = pos;
-        } else {
-            i += 1;
+    for (pc, &is_start) in basic_block_starts.iter().enumerate() {
+        if is_start {
+            costs[pc] = crate::gas_cost::gas_cost_for_block(code, bitmask, pc);
         }
     }
-
     costs
 }
 

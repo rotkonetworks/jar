@@ -7,6 +7,7 @@
 //! - Host-call interface for system interactions
 
 pub mod args;
+pub mod gas_cost;
 pub mod instruction;
 pub mod memory;
 pub mod program;
