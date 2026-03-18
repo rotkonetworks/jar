@@ -963,9 +963,26 @@ fn eu_consume(avail: &mut [u8; 5], eu: u8) {
     }
 }
 
-/// Fast pipeline simulation using bitmask-based SoA ROB.
-/// All state on the stack, zero heap allocation.
-/// Uses pre-computed FastCost from each instruction (no per-call match dispatch).
+// ---- Cycle advance ----
+
+/// Advance all EXE entries by one cycle. Entries reaching 0 transition to FIN.
+/// Uses bitmask iteration — only touches active entries (O(popcount) not O(32)).
+#[inline(always)]
+fn advance_cycle(cycles_left: &mut [u8; 32], exe_mask: &mut u32, fin_mask: &mut u32) {
+    let mut exe = *exe_mask;
+    while exe != 0 {
+        let i = exe.trailing_zeros() as usize;
+        exe &= exe - 1;
+        if cycles_left[i] <= 1 {
+            cycles_left[i] = 0;
+            *exe_mask &= !(1u32 << i);
+            *fin_mask |= 1u32 << i;
+        } else {
+            cycles_left[i] -= 1;
+        }
+    }
+}
+
 fn gas_sim_fast(instrs: &[crate::recompiler::predecode::PreDecodedInst], _code: &[u8], _bitmask: &[u8]) -> u32 {
     // SoA ROB arrays (32 entries, stack-allocated)
     let mut state = [0u8; 32];        // 0=empty, 1=wait, 2=exe, 3=fin
@@ -1055,19 +1072,8 @@ fn gas_sim_fast(instrs: &[crate::recompiler::predecode::PreDecodedInst], _code: 
             break;
         }
 
-        // Phase 4: Advance cycle
-        let mut exe = exe_mask;
-        while exe != 0 {
-            let i = exe.trailing_zeros() as usize;
-            exe &= exe - 1;
-            if cycles_left[i] <= 1 {
-                state[i] = 3; // FIN
-                exe_mask &= !(1u32 << i);
-                fin_mask |= 1u32 << i;
-            } else {
-                cycles_left[i] -= 1;
-            }
-        }
+        // Phase 4: Advance cycle — decrement cycles_left for EXE entries, transition to FIN
+        advance_cycle(&mut cycles_left, &mut exe_mask, &mut fin_mask);
 
         cycles += 1;
         decode_slots = 4;
