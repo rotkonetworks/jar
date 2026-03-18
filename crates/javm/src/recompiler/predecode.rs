@@ -108,10 +108,8 @@ pub fn predecode(code: &[u8], bitmask: &[u8], jump_table: &[u32]) -> Vec<PreDeco
     }
 
     // --- Pass 3: Compute gas costs using pre-decoded instructions ---
-    let t_gas = std::time::Instant::now();
-    let gas_block_count = is_gas_start.iter().filter(|&&b| b).count();
-
     // Find block boundaries (indices into instrs where is_gas_start is true)
+    let gas_block_count = is_gas_start.iter().filter(|&&b| b).count();
     let mut block_starts: Vec<usize> = Vec::with_capacity(gas_block_count + 1);
     for i in 0..instrs.len() {
         if is_gas_start[i] {
@@ -125,11 +123,9 @@ pub fn predecode(code: &[u8], bitmask: &[u8], jump_table: &[u32]) -> Vec<PreDeco
         let start = w[0];
         let end = w[1];
         let block_instrs = &instrs[start..end];
-        let cost = crate::gas_cost::gas_cost_for_block_decoded(block_instrs, code, bitmask);
+        let cost = crate::gas_cost::gas_cost_for_block_fast(block_instrs, code, bitmask);
         instrs[start].gas_cost = cost as u32;
     }
-    let gas_ms = t_gas.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("predecode: {} inst, {} gas blocks, gas_sim={:.1}ms", instrs.len(), gas_block_count, gas_ms);
 
     instrs
 }
