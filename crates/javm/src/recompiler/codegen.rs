@@ -239,12 +239,11 @@ impl Compiler {
         let mut gas_sim = GasSimulator::new();
         let mut pending_gas: Option<(Label, u32, usize)> = None;
 
+        // Find first instruction start
         let mut pc: usize = 0;
+        while pc < code.len() && (pc >= bitmask.len() || bitmask[pc] != 1) { pc += 1; }
+
         while pc < code.len() {
-            if pc < bitmask.len() && bitmask[pc] != 1 {
-                pc += 1;
-                continue;
-            }
 
             // Decode instruction inline
             let opcode = match Opcode::from_byte(code[pc]) {

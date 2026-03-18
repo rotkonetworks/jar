@@ -127,8 +127,21 @@ impl Assembler {
 
     // === Raw byte emission ===
 
+    #[inline(always)]
     fn emit(&mut self, b: u8) {
         self.code.push(b);
+    }
+
+    /// Emit 2 bytes at once.
+    #[inline(always)]
+    fn emit2(&mut self, a: u8, b: u8) {
+        self.code.extend_from_slice(&[a, b]);
+    }
+
+    /// Emit 3 bytes at once.
+    #[inline(always)]
+    fn emit3(&mut self, a: u8, b: u8, c: u8) {
+        self.code.extend_from_slice(&[a, b, c]);
     }
 
     fn emit_u32(&mut self, v: u32) {
@@ -207,9 +220,11 @@ impl Assembler {
     /// mov r64, r64
     pub fn mov_rr(&mut self, dst: Reg, src: Reg) {
         if dst == src { return; }
-        self.rex_w(src, dst);
-        self.emit(0x89);
-        self.modrm_rr(src, dst);
+        self.emit3(
+            0x48 | (src.hi() << 2) | dst.hi(),
+            0x89,
+            0xC0 | (src.lo() << 3) | dst.lo(),
+        );
     }
 
     /// mov r64, imm64
