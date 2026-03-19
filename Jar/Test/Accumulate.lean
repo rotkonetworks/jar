@@ -296,25 +296,29 @@ def updateStatistics (stats : Array TAServiceStats)
     let itemCount := reports.foldl (init := 0) fun acc r =>
       acc + r.digests.foldl (init := 0) fun acc2 d =>
         acc2 + if d.serviceId == sid then 1 else 0
-    match result.findIdx? (·.serviceId == sid.toNat) with
-    | some idx =>
-      let s := result[idx]!
-      result := result.set! idx { s with
-        accumulateCount := s.accumulateCount + itemCount
-        accumulateGasUsed := s.accumulateGasUsed + gas.toNat }
-    | none =>
-      result := result.push {
-        serviceId := sid.toNat
-        providedCount := 0
-        providedSize := 0
-        refinementCount := 0
-        refinementGasUsed := 0
-        imports := 0
-        extrinsicCount := 0
-        extrinsicSize := 0
-        exports := 0
-        accumulateCount := itemCount
-        accumulateGasUsed := gas.toNat }
+    -- GP: only include if G(s) + N(s) ≠ 0
+    if gas.toNat + itemCount == 0 then
+      pure ()
+    else
+      match result.findIdx? (·.serviceId == sid.toNat) with
+      | some idx =>
+        let s := result[idx]!
+        result := result.set! idx { s with
+          accumulateCount := s.accumulateCount + itemCount
+          accumulateGasUsed := s.accumulateGasUsed + gas.toNat }
+      | none =>
+        result := result.push {
+          serviceId := sid.toNat
+          providedCount := 0
+          providedSize := 0
+          refinementCount := 0
+          refinementGasUsed := 0
+          imports := 0
+          extrinsicCount := 0
+          extrinsicSize := 0
+          exports := 0
+          accumulateCount := itemCount
+          accumulateGasUsed := gas.toNat }
   result
 
 -- ============================================================================
@@ -383,8 +387,9 @@ def accumulateTransition (pre : TAState) (inp : TAInput)
       accounts := accounts.insert sid { acct with lastAccumulation := UInt32.ofNat inp.slot }
     | none => pure ()
 
-  -- Step 9: Update statistics — GP eq:accumulationstatisticsdef
-  let newStats := updateStatistics pre.statistics gasMap accumulatable n
+  -- Step 9: Compute statistics fresh — GP eq:accumulationstatisticsdef
+  -- Statistics are per-block, not carried forward from pre_state
+  let newStats := updateStatistics #[] gasMap accumulatable n
 
   -- Step 10: Shift accumulated
   let newAccumulated := shiftAccumulated pre.accumulated accumulatable n
