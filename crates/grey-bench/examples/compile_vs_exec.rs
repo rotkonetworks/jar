@@ -39,7 +39,7 @@ fn main() {
 
     // --- PolkaVM compiler ---
     let pvm_blob = polkavm_sort_blob(500);
-    let mut config = polkavm::Config::new();
+    let mut config = polkavm::Config::from_env().unwrap_or_else(|_| polkavm::Config::new());
     config.set_backend(Some(polkavm::BackendKind::Compiler));
     config.set_allow_experimental(true);
     config.set_sandboxing_enabled(false);

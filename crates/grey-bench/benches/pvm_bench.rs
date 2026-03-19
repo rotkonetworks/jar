@@ -67,7 +67,7 @@ use polkavm::{BackendKind, Config, Engine, GasMeteringKind, InterruptKind, Modul
 use polkavm_common::program::Reg as PReg;
 
 fn polkavm_config(backend: BackendKind) -> Config {
-    let mut config = Config::new();
+    let mut config = Config::from_env().unwrap_or_else(|_| Config::new());
     config.set_backend(Some(backend));
     config.set_allow_experimental(true);
     config.set_sandboxing_enabled(false);
