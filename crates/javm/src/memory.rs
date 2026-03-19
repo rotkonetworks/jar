@@ -73,6 +73,18 @@ impl Memory {
         );
     }
 
+    /// Map a page with metadata only (no data allocation).
+    /// Used by the recompiler where page data lives in the flat buffer.
+    pub fn map_page_meta(&mut self, page: u32, access: PageAccess) {
+        self.pages.insert(
+            page,
+            PageData {
+                access,
+                data: Vec::new(),
+            },
+        );
+    }
+
     /// Map a page and fill it with data.
     pub fn map_page_with_data(&mut self, page: u32, access: PageAccess, data: &[u8]) {
         let mut page_data = vec![0u8; PVM_PAGE_SIZE as usize];

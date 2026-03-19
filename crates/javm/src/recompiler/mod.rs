@@ -6,7 +6,7 @@
 //!
 //! Usage:
 //! ```ignore
-//! let pvm = RecompiledPvm::new(code, bitmask, jump_table, registers, memory, gas);
+//! let pvm = RecompiledPvm::new(code, bitmask, jump_table, registers, memory, gas, None);
 //! let (exit, gas_used) = pvm.run();
 //! ```
 
@@ -153,8 +153,9 @@ const CTX_PAGE: usize = 4096;         // JitContext page
 const HEADER_SIZE: usize = NUM_PAGES + CTX_PAGE; // perms + ctx page before guest mem
 
 impl FlatMemory {
-    /// Create a flat memory from the interpreter's Memory struct.
-    fn new(memory: &Memory) -> Option<Self> {
+    /// Create a flat memory from the interpreter's Memory struct
+    /// and optional direct data layout (for meta-only Memory).
+    fn new(memory: &Memory, layout: Option<&crate::program::DataLayout>) -> Option<Self> {
         let region_size = HEADER_SIZE + FLAT_BUF_SIZE;
         let region = unsafe {
             libc::mmap(
@@ -173,7 +174,7 @@ impl FlatMemory {
         let perms = region; // permission table at start
         let buf = unsafe { region.add(HEADER_SIZE) }; // guest memory after header
 
-        // Copy page data and permissions from Memory
+        // Set page permissions from Memory
         for (page_idx, access, data) in memory.pages_iter() {
             let perm = match access {
                 crate::memory::PageAccess::Inaccessible => 0,
@@ -183,10 +184,28 @@ impl FlatMemory {
             if (page_idx as usize) < NUM_PAGES {
                 unsafe { *perms.add(page_idx as usize) = perm; }
             }
-            let offset = (page_idx as usize) * 4096;
-            if offset + data.len() <= FLAT_BUF_SIZE {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(data.as_ptr(), buf.add(offset), data.len());
+            // Copy page data (skip if meta-only — data written directly below)
+            if !data.is_empty() {
+                let offset = (page_idx as usize) * 4096;
+                if offset + data.len() <= FLAT_BUF_SIZE {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(data.as_ptr(), buf.add(offset), data.len());
+                    }
+                }
+            }
+        }
+
+        // If layout is provided (meta-only Memory), write data directly
+        if let Some(dl) = layout {
+            unsafe {
+                if !dl.arg_data.is_empty() {
+                    std::ptr::copy_nonoverlapping(dl.arg_data.as_ptr(), buf.add(dl.arg_start as usize), dl.arg_data.len());
+                }
+                if !dl.ro_data.is_empty() {
+                    std::ptr::copy_nonoverlapping(dl.ro_data.as_ptr(), buf.add(dl.ro_start as usize), dl.ro_data.len());
+                }
+                if !dl.rw_data.is_empty() {
+                    std::ptr::copy_nonoverlapping(dl.rw_data.as_ptr(), buf.add(dl.rw_start as usize), dl.rw_data.len());
                 }
             }
         }
@@ -551,6 +570,7 @@ impl RecompiledPvm {
         registers: [u64; PVM_REGISTER_COUNT],
         memory: Memory,
         gas: Gas,
+        data_layout: Option<crate::program::DataLayout>,
     ) -> Result<Self, String> {
         let debug = std::env::var("GREY_PVM_DEBUG").is_ok();
 
@@ -569,7 +589,7 @@ impl RecompiledPvm {
 
         // Initialize flat memory — JitContext will live inside this region
         let _t1 = std::time::Instant::now();
-        let flat_memory = FlatMemory::new(unsafe { &*memory_ptr })
+        let flat_memory = FlatMemory::new(unsafe { &*memory_ptr }, data_layout.as_ref())
             .ok_or("failed to mmap flat memory region")?;
         let _t_flat = _t1.elapsed();
 
@@ -1051,7 +1071,7 @@ pub fn initialize_program_recompiled(
     arguments: &[u8],
     gas: Gas,
 ) -> Option<RecompiledPvm> {
-    let parsed = crate::program::parse_program_blob(blob, arguments, gas)?;
+    let parsed = crate::program::parse_program_blob(blob, arguments, gas, true)?;
 
     let mut rpvm = RecompiledPvm::new(
         parsed.code,
@@ -1060,6 +1080,7 @@ pub fn initialize_program_recompiled(
         parsed.registers,
         parsed.memory,
         gas,
+        parsed.layout,
     ).ok()?;
 
     rpvm.ctx_mut().heap_base = parsed.heap_base;
@@ -1131,7 +1152,7 @@ mod tests {
         let registers = [0u64; 13];
         let memory = Memory::new();
 
-        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 1000)
+        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 1000, None)
             .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(exit, ExitReason::Panic);
@@ -1144,7 +1165,7 @@ mod tests {
         let registers = [0u64; 13];
         let memory = Memory::new();
 
-        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 1000)
+        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 1000, None)
             .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(exit, ExitReason::HostCall(42));
@@ -1157,7 +1178,7 @@ mod tests {
         let registers = [0u64; 13];
         let memory = Memory::new();
 
-        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 1000)
+        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 1000, None)
             .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(pvm.registers()[0], 123);
@@ -1176,7 +1197,7 @@ mod tests {
         let registers = [0u64; 13];
         let memory = Memory::new();
 
-        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 1000)
+        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 1000, None)
             .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(pvm.registers()[2], 30);
@@ -1190,7 +1211,7 @@ mod tests {
         let registers = [0u64; 13];
         let memory = Memory::new();
 
-        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 0)
+        let mut pvm = RecompiledPvm::new(code, bitmask, vec![], registers, memory, 0, None)
             .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(exit, ExitReason::OutOfGas);

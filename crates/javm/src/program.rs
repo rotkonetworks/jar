@@ -175,8 +175,17 @@ pub fn initialize_program(program_blob: &[u8], arguments: &[u8], gas: Gas) -> Op
     Some(pvm)
 }
 
+/// Memory layout offsets for direct flat-buffer writes.
+pub struct DataLayout {
+    pub arg_start: u32,
+    pub arg_data: Vec<u8>,
+    pub ro_start: u32,
+    pub ro_data: Vec<u8>,
+    pub rw_start: u32,
+    pub rw_data: Vec<u8>,
+}
+
 /// Parsed program data without interpreter pre-decoding.
-/// Used by the recompiler to avoid the cost of `Pvm::new()`.
 pub struct ParsedProgram {
     pub code: Vec<u8>,
     pub bitmask: Vec<u8>,
@@ -185,11 +194,14 @@ pub struct ParsedProgram {
     pub memory: Memory,
     pub heap_base: u32,
     pub heap_top: u32,
+    /// Layout info for direct flat-buffer writes (avoids Memory page data).
+    pub layout: Option<DataLayout>,
 }
 
 /// Parse a program blob into raw components without building a full Pvm.
-/// Skips interpreter pre-decoding (saves ~140ms for large programs).
-pub fn parse_program_blob(program_blob: &[u8], arguments: &[u8], _gas: Gas) -> Option<ParsedProgram> {
+/// When `meta_only` is true, Memory pages are metadata-only (no 4KB data allocations).
+/// The caller should use `layout` to write data directly into a flat buffer.
+pub fn parse_program_blob(program_blob: &[u8], arguments: &[u8], _gas: Gas, meta_only: bool) -> Option<ParsedProgram> {
     let blob = skip_metadata(program_blob);
 
     if blob.len() < 15 {
@@ -234,10 +246,27 @@ pub fn parse_program_blob(program_blob: &[u8], arguments: &[u8], _gas: Gas) -> O
     if (mem_size as u64) > (1u64 << 32) { return None; }
 
     let mut memory = Memory::new();
-    map_region(&mut memory, 0, mem_size, PageAccess::ReadWrite);
-    copy_data(&mut memory, arg_start, arguments);
-    copy_data(&mut memory, ro_start, ro_data);
-    copy_data(&mut memory, rw_start, rw_data);
+    let layout = if meta_only {
+        // Metadata-only: no 4KB page data allocations.
+        let num_pages = (mem_size + PVM_PAGE_SIZE - 1) / PVM_PAGE_SIZE;
+        for i in 0..num_pages {
+            memory.map_page_meta(i, PageAccess::ReadWrite);
+        }
+        Some(DataLayout {
+            arg_start,
+            arg_data: arguments.to_vec(),
+            ro_start,
+            ro_data: ro_data.to_vec(),
+            rw_start,
+            rw_data: rw_data.to_vec(),
+        })
+    } else {
+        map_region(&mut memory, 0, mem_size, PageAccess::ReadWrite);
+        copy_data(&mut memory, arg_start, arguments);
+        copy_data(&mut memory, ro_start, ro_data);
+        copy_data(&mut memory, rw_start, rw_data);
+        None
+    };
 
     let mut registers = [0u64; crate::PVM_REGISTER_COUNT];
     registers[0] = s as u64;
@@ -249,6 +278,7 @@ pub fn parse_program_blob(program_blob: &[u8], arguments: &[u8], _gas: Gas) -> O
         code, bitmask, jump_table, registers, memory,
         heap_base: heap_start,
         heap_top: heap_end,
+        layout,
     })
 }
 
