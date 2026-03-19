@@ -28,7 +28,6 @@ pub enum ExitReason {
 #[derive(Clone, Copy, Debug)]
 pub struct DecodedInst {
     pub opcode: Opcode,
-    pub args: Args,
     /// Register A (first register operand, context-dependent).
     pub ra: u8,
     /// Register B (second register operand, context-dependent).
@@ -306,14 +305,7 @@ impl Pvm {
         // Per-instruction trace
         tracing::trace!(pc, ?opcode, gas = self.gas, "pvm-inst");
 
-        // Execute instruction
-        self.execute(opcode, args, next_pc)
-    }
-
-    /// Execute a decoded instruction. Returns exit reason if halting.
-    #[cold]
-    #[inline(never)]
-    fn execute(&mut self, opcode: Opcode, args: Args, next_pc: u32) -> Option<ExitReason> {
+        // Execute instruction inline
         match opcode {
             // === A.5.1: No arguments ===
             Opcode::Trap => return Some(ExitReason::Panic),
@@ -1756,18 +1748,192 @@ impl Pvm {
                     self.registers[rd] = ((self.registers[ra] as i64 as i128).wrapping_mul(self.registers[rb] as u128 as i128) >> 64) as u64;
                 }
 
-                // === All other instructions: delegate to execute() ===
-                _ => {
-                    self.pc = inst.pc;
-                    if let Some(e) = self.execute(inst.opcode, inst.args, next_pc) {
-                        return (e, initial_gas - self.gas);
+                // === Two immediates (store_imm: addr = imm1, value = imm2) ===
+                Opcode::StoreImmU8 => {
+                    let addr = imm1 as u32;
+                    if !self.write_u8(addr, inst.imm2 as u8) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+                Opcode::StoreImmU16 => {
+                    let addr = imm1 as u32;
+                    if !self.write_u16_le(addr, inst.imm2 as u16) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+                Opcode::StoreImmU32 => {
+                    let addr = imm1 as u32;
+                    if !self.write_u32_le(addr, inst.imm2 as u32) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+                Opcode::StoreImmU64 => {
+                    let addr = imm1 as u32;
+                    if !self.write_u64_le(addr, inst.imm2) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+
+                // === Absolute address loads (addr = imm1) ===
+                Opcode::LoadU8 => {
+                    let addr = imm1 as u32;
+                    match self.read_u8(addr) {
+                        Some(v) => { self.registers[ra] = v as u64; }
+                        None => { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
                     }
-                    if self.pc != next_pc {
-                        // execute() changed PC — resolve dynamically
-                        let t = self.pc as usize;
+                }
+                Opcode::LoadI8 => {
+                    let addr = imm1 as u32;
+                    match self.read_u8(addr) {
+                        Some(v) => { self.registers[ra] = v as i8 as i64 as u64; }
+                        None => { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                    }
+                }
+                Opcode::LoadU16 => {
+                    let addr = imm1 as u32;
+                    match self.read_u16_le(addr) {
+                        Some(v) => { self.registers[ra] = v as u64; }
+                        None => { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                    }
+                }
+                Opcode::LoadI16 => {
+                    let addr = imm1 as u32;
+                    match self.read_u16_le(addr) {
+                        Some(v) => { self.registers[ra] = v as i16 as i64 as u64; }
+                        None => { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                    }
+                }
+                Opcode::LoadU32 => {
+                    let addr = imm1 as u32;
+                    match self.read_u32_le(addr) {
+                        Some(v) => { self.registers[ra] = v as u64; }
+                        None => { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                    }
+                }
+                Opcode::LoadI32 => {
+                    let addr = imm1 as u32;
+                    match self.read_u32_le(addr) {
+                        Some(v) => { self.registers[ra] = v as i32 as i64 as u64; }
+                        None => { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                    }
+                }
+                Opcode::LoadU64 => {
+                    let addr = imm1 as u32;
+                    match self.read_u64_le(addr) {
+                        Some(v) => { self.registers[ra] = v; }
+                        None => { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                    }
+                }
+
+                // === Absolute address stores (addr = imm1, value = reg[ra]) ===
+                Opcode::StoreU8 => {
+                    let addr = imm1 as u32;
+                    if !self.write_u8(addr, self.registers[ra] as u8) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+                Opcode::StoreU16 => {
+                    let addr = imm1 as u32;
+                    if !self.write_u16_le(addr, self.registers[ra] as u16) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+                Opcode::StoreU32 => {
+                    let addr = imm1 as u32;
+                    if !self.write_u32_le(addr, self.registers[ra] as u32) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+                Opcode::StoreU64 => {
+                    let addr = imm1 as u32;
+                    if !self.write_u64_le(addr, self.registers[ra]) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+
+                // === Store imm indirect (addr = reg[ra] + imm1, value = imm2) ===
+                Opcode::StoreImmIndU8 => {
+                    let addr = self.registers[ra].wrapping_add(imm1) as u32;
+                    if !self.write_u8(addr, inst.imm2 as u8) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+                Opcode::StoreImmIndU16 => {
+                    let addr = self.registers[ra].wrapping_add(imm1) as u32;
+                    if !self.write_u16_le(addr, inst.imm2 as u16) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+                Opcode::StoreImmIndU32 => {
+                    let addr = self.registers[ra].wrapping_add(imm1) as u32;
+                    if !self.write_u32_le(addr, inst.imm2 as u32) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+                Opcode::StoreImmIndU64 => {
+                    let addr = self.registers[ra].wrapping_add(imm1) as u32;
+                    if !self.write_u64_le(addr, inst.imm2) { exit = Some(ExitReason::PageFault(addr & !0xFFF)); }
+                }
+
+                // === LoadImmJump (reg[ra] = imm1, branch to target) ===
+                Opcode::LoadImmJump => {
+                    self.registers[ra] = imm1;
+                    if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                    else { exit = Some(ExitReason::Panic); }
+                }
+
+                // === BranchImm variants (cond on reg[ra] vs imm1, target = target_idx) ===
+                Opcode::BranchEqImm => {
+                    if self.registers[ra] == imm1 {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+                Opcode::BranchNeImm => {
+                    if self.registers[ra] != imm1 {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+                Opcode::BranchLtUImm => {
+                    if self.registers[ra] < imm1 {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+                Opcode::BranchLeUImm => {
+                    if self.registers[ra] <= imm1 {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+                Opcode::BranchGeUImm => {
+                    if self.registers[ra] >= imm1 {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+                Opcode::BranchGtUImm => {
+                    if self.registers[ra] > imm1 {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+                Opcode::BranchLtSImm => {
+                    if (self.registers[ra] as i64) < (imm1 as i64) {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+                Opcode::BranchLeSImm => {
+                    if (self.registers[ra] as i64) <= (imm1 as i64) {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+                Opcode::BranchGeSImm => {
+                    if (self.registers[ra] as i64) >= (imm1 as i64) {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+                Opcode::BranchGtSImm => {
+                    if (self.registers[ra] as i64) > (imm1 as i64) {
+                        if inst.target_idx != u32::MAX { branch_idx = inst.target_idx; }
+                        else { exit = Some(ExitReason::Panic); }
+                    }
+                }
+
+                // === Two registers + two immediates ===
+                Opcode::LoadImmJumpInd => {
+                    self.registers[ra] = imm1;
+                    let addr = self.registers[rb].wrapping_add(inst.imm2) % (1u64 << 32);
+                    let (e, target_pc) = self.djump(addr);
+                    if let Some(reason) = e {
+                        exit = Some(reason);
+                    } else {
+                        let t = target_pc as usize;
                         if t < self.pc_to_idx.len() {
-                            let ti = self.pc_to_idx[t];
-                            if ti != u32::MAX { branch_idx = ti; }
+                            let tidx = self.pc_to_idx[t];
+                            if tidx != u32::MAX { branch_idx = tidx; }
                             else { exit = Some(ExitReason::Panic); }
                         } else { exit = Some(ExitReason::Panic); }
                     }
@@ -1973,7 +2139,6 @@ fn predecode_instructions(
                 pc_to_idx[pc] = idx;
                 insts.push(DecodedInst {
                     opcode,
-                    args,
                     ra, rb, rd, imm1, imm2,
                     pc: pc as u32,
                     next_pc,
@@ -1995,7 +2160,6 @@ fn predecode_instructions(
     // the last instruction doesn't index out of bounds.
     insts.push(DecodedInst {
         opcode: Opcode::Trap,
-        args: Args::None,
         ra: 0, rb: 0, rd: 0, imm1: 0, imm2: 0,
         pc: len as u32,
         next_pc: len as u32 + 1,
@@ -2016,16 +2180,31 @@ fn predecode_instructions(
             sentinel_idx
         };
 
-        // Resolve branch/jump target index for instructions where imm1 is the target PC:
-        // Jump (OneOffset) and BranchEq/Ne/LtU/LtS/GeU/GeS (TwoRegOneOffset)
+        // Resolve branch/jump target index.
+        // For Jump/BranchEq/Ne/LtU/LtS/GeU/GeS: target PC is in imm1.
+        // For BranchEqImm/NeImm/.../GtSImm and LoadImmJump: target PC is in imm2.
         let target_idx = {
             let op = inst.opcode;
-            let has_imm1_target = matches!(op,
+            let target_from_imm1 = matches!(op,
                 Opcode::Jump | Opcode::BranchEq | Opcode::BranchNe |
                 Opcode::BranchLtU | Opcode::BranchLtS | Opcode::BranchGeU | Opcode::BranchGeS
             );
-            if has_imm1_target {
-                let target_pc = inst.imm1 as usize;
+            let target_from_imm2 = matches!(op,
+                Opcode::LoadImmJump |
+                Opcode::BranchEqImm | Opcode::BranchNeImm |
+                Opcode::BranchLtUImm | Opcode::BranchLeUImm |
+                Opcode::BranchGeUImm | Opcode::BranchGtUImm |
+                Opcode::BranchLtSImm | Opcode::BranchLeSImm |
+                Opcode::BranchGeSImm | Opcode::BranchGtSImm
+            );
+            let target_pc_opt = if target_from_imm1 {
+                Some(inst.imm1 as usize)
+            } else if target_from_imm2 {
+                Some(inst.imm2 as usize)
+            } else {
+                None
+            };
+            if let Some(target_pc) = target_pc_opt {
                 if target_pc < basic_block_starts.len() && basic_block_starts[target_pc]
                     && target_pc < pc_to_idx.len()
                 {
