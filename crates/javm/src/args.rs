@@ -88,11 +88,29 @@ fn zeta(code: &[u8], i: usize) -> u8 {
 /// Read `n` bytes from code at offset as little-endian u64 (no allocation).
 #[inline(always)]
 fn read_le_at(code: &[u8], offset: usize, n: usize) -> u64 {
-    let mut val = 0u64;
-    for i in 0..n {
-        val |= (zeta(code, offset + i) as u64) << (i * 8);
+    // Fast path: all bytes in bounds — read directly without per-byte checks
+    if offset + n <= code.len() {
+        let s = &code[offset..offset + n];
+        match n {
+            0 => 0,
+            1 => s[0] as u64,
+            2 => u16::from_le_bytes([s[0], s[1]]) as u64,
+            3 => s[0] as u64 | (s[1] as u64) << 8 | (s[2] as u64) << 16,
+            4 => u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as u64,
+            _ => {
+                let mut buf = [0u8; 8];
+                buf[..n].copy_from_slice(s);
+                u64::from_le_bytes(buf)
+            }
+        }
+    } else {
+        // Slow path: near end of code, use zero-extending reads
+        let mut val = 0u64;
+        for i in 0..n {
+            val |= (zeta(code, offset + i) as u64) << (i * 8);
+        }
+        val
     }
-    val
 }
 
 /// Read `n` bytes and sign-extend (no allocation).
