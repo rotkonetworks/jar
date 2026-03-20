@@ -3,6 +3,8 @@
 //! Includes `deblob` for parsing program blobs and linear memory
 //! initialization with basic block prevalidation.
 
+use alloc::{vec, vec::Vec};
+
 use crate::instruction::Opcode;
 use crate::vm::Pvm;
 use crate::{Gas, PVM_PAGE_SIZE};

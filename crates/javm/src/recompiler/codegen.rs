@@ -22,7 +22,7 @@
 //! Reserved: R15 = JitContext pointer, RDX = scratch, RSP = native stack.
 
 use super::asm::{Assembler, Cc, Label, Reg};
-use super::gas_sim::GasSimulator;
+use crate::gas_sim::GasSimulator;
 use crate::args::{self, Args};
 use crate::instruction::Opcode;
 

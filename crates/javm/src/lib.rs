@@ -6,14 +6,20 @@
 //! - Gas metering for bounded execution
 //! - Host-call interface for system interactions
 
+#![cfg_attr(not(feature = "std"), no_std)]
+extern crate alloc;
+
 pub mod args;
 pub mod gas_cost;
+pub mod gas_sim;
 pub mod instruction;
 pub mod program;
+#[cfg(feature = "std")]
 pub mod recompiler;
 pub mod vm;
 
 pub use vm::{ExitReason, Pvm};
+#[cfg(feature = "std")]
 pub use recompiler::RecompiledPvm;
 
 // --- PVM constants (Gray Paper Appendix A / I.4.4) ---

@@ -7,10 +7,12 @@ authors.workspace = true
 description = "Join-Accumulate VM (JAVM)."
 
 [features]
-signals = []
+default = ["std"]
+std = ["libc", "memoffset"]
+signals = ["std"]
 
 [dependencies]
-libc = "0.2"
-memoffset = "0.9"
+libc = { version = "0.2", optional = true }
+memoffset = { version = "0.9", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

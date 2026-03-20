@@ -2,6 +2,8 @@
 //!
 //! Implements the single-step state transition Ψ₁ and the full PVM Ψ.
 
+use alloc::{vec, vec::Vec};
+
 use crate::args::{self, Args};
 use crate::instruction::Opcode;
 use crate::{Gas, PVM_REGISTER_COUNT};
@@ -1619,10 +1621,10 @@ impl Pvm {
                 Opcode::AndInv => { self.registers[rd] = self.registers[ra] & !self.registers[rb]; }
                 Opcode::OrInv => { self.registers[rd] = self.registers[ra] | !self.registers[rb]; }
                 Opcode::Xnor => { self.registers[rd] = !(self.registers[ra] ^ self.registers[rb]); }
-                Opcode::Max => { self.registers[rd] = std::cmp::max(self.registers[ra] as i64, self.registers[rb] as i64) as u64; }
-                Opcode::MaxU => { self.registers[rd] = std::cmp::max(self.registers[ra], self.registers[rb]); }
-                Opcode::Min => { self.registers[rd] = std::cmp::min(self.registers[ra] as i64, self.registers[rb] as i64) as u64; }
-                Opcode::MinU => { self.registers[rd] = std::cmp::min(self.registers[ra], self.registers[rb]); }
+                Opcode::Max => { self.registers[rd] = core::cmp::max(self.registers[ra] as i64, self.registers[rb] as i64) as u64; }
+                Opcode::MaxU => { self.registers[rd] = core::cmp::max(self.registers[ra], self.registers[rb]); }
+                Opcode::Min => { self.registers[rd] = core::cmp::min(self.registers[ra] as i64, self.registers[rb] as i64) as u64; }
+                Opcode::MinU => { self.registers[rd] = core::cmp::min(self.registers[ra], self.registers[rb]); }
 
                 // === Indirect loads (two reg + imm) ===
                 Opcode::LoadIndU8 => {
@@ -2064,7 +2066,7 @@ pub fn compute_basic_block_starts(code: &[u8], bitmask: &[u8]) -> Vec<bool> {
 /// Gas is charged per basic block at block entry: max(max_done - 3, 1).
 fn compute_block_gas_costs(code: &[u8], bitmask: &[u8], basic_block_starts: &[bool]) -> Vec<u64> {
     use crate::gas_cost::{fast_cost_from_raw, skip_distance};
-    use crate::recompiler::gas_sim::GasSimulator;
+    use crate::gas_sim::GasSimulator;
 
     let len = code.len();
     let mut costs = vec![0u64; len];

@@ -12,7 +12,6 @@
 
 pub mod asm;
 pub mod codegen;
-pub mod gas_sim;
 pub mod predecode;
 #[cfg(feature = "signals")]
 pub mod signal;

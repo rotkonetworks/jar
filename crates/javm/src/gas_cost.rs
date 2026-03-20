@@ -8,6 +8,7 @@
 //! - 4 decode slots per cycle, 5 dispatch slots per cycle
 //! - Execution units: ALU:4, LOAD:4, STORE:4, MUL:1, DIV:1
 
+use alloc::{vec, vec::Vec};
 
 // --- Data structures ---
 
@@ -430,8 +431,9 @@ fn gas_sim_traced(code: &[u8], bitmask: &[u8], start_pc: usize, trace: bool) -> 
                 let npc = pc + 1 + skip;
                 if npc < code.len() { Some(npc) } else { None }
             };
+            #[cfg(feature = "std")]
             if trace {
-                let op = crate::instruction::Opcode::from_byte(code[pc]).map(|o| format!("{:?}", o)).unwrap_or("?".into());
+                let op = crate::instruction::Opcode::from_byte(code[pc]).map(|o| alloc::format!("{:?}", o)).unwrap_or("?".into());
                 eprintln!("  [{}] DECODE pc={} {} cy={} dec={} rob_idx={} deps={:?} move={} term={} slots_left={}",
                     iter, pc, op, cost.cycles, cost.decode_slots, s.rob.len(), &deps[..dep_count as usize], cost.is_move_reg, cost.is_terminator, s.decode_slots);
             }
@@ -455,6 +457,7 @@ fn gas_sim_traced(code: &[u8], bitmask: &[u8], start_pc: usize, trace: bool) -> 
         if s.dispatch_slots > 0 {
             if let Some(idx) = find_ready_entry(&s.rob, s.exec_units) {
                 let eu = s.rob[idx].exec_units;
+                #[cfg(feature = "std")]
                 if trace {
                     eprintln!("  [{}] DISPATCH rob[{}] cy={} dispatch_left={}", iter, idx, s.rob[idx].cycles_left, s.dispatch_slots - 1);
                 }
@@ -467,15 +470,17 @@ fn gas_sim_traced(code: &[u8], bitmask: &[u8], start_pc: usize, trace: bool) -> 
 
         // Priority 3: Done
         if s.ip.is_none() && rob_all_finished(&s.rob) {
+            #[cfg(feature = "std")]
             if trace { eprintln!("  [{}] DONE cycles={}", iter, s.cycles); }
             break;
         }
 
         // Priority 4: Advance cycle
+        #[cfg(feature = "std")]
         if trace {
-            let states: Vec<String> = s.rob.iter().enumerate().map(|(i, e)| {
+            let states: Vec<alloc::string::String> = s.rob.iter().enumerate().map(|(i, e)| {
                 let st = match e.state { RobState::Wait => "W", RobState::Exe => "E", RobState::Fin => "F" };
-                format!("{}:{}{}", i, st, if e.state == RobState::Exe { format!("({})", e.cycles_left) } else { String::new() })
+                alloc::format!("{}:{}{}", i, st, if e.state == RobState::Exe { alloc::format!("({})", e.cycles_left) } else { alloc::string::String::new() })
             }).collect();
             eprintln!("  [{}] ADVANCE cycle {} → {} rob=[{}]", iter, s.cycles, s.cycles + 1, states.join(", "));
         }
@@ -509,6 +514,7 @@ pub fn gas_cost_for_block(code: &[u8], bitmask: &[u8], start_pc: usize) -> u64 {
     if cycles > 3 { (cycles - 3) as u64 } else { 1 }
 }
 
+#[cfg(feature = "std")]
 /// Compute gas cost for a block given as a slice of pre-decoded instructions.
 /// This avoids re-parsing raw code+bitmask.
 pub fn gas_cost_for_block_decoded(instrs: &[crate::recompiler::predecode::PreDecodedInst], code: &[u8], bitmask: &[u8]) -> u64 {
@@ -516,6 +522,7 @@ pub fn gas_cost_for_block_decoded(instrs: &[crate::recompiler::predecode::PreDec
     if cycles > 3 { (cycles - 3) as u64 } else { 1 }
 }
 
+#[cfg(feature = "std")]
 /// Pipeline simulation from pre-decoded instructions (no raw byte re-parsing).
 fn gas_sim_decoded(instrs: &[crate::recompiler::predecode::PreDecodedInst], code: &[u8], bitmask: &[u8]) -> u32 {
     use crate::args::Args;
@@ -614,6 +621,7 @@ fn gas_sim_decoded(instrs: &[crate::recompiler::predecode::PreDecodedInst], code
     s.cycles
 }
 
+#[cfg(feature = "std")]
 /// Fast instruction cost lookup using pre-decoded register fields.
 /// Avoids re-parsing code bytes for register extraction.
 fn instruction_cost_fast(opcode: u8, ra: u8, rb: u8, rd: u8,
@@ -1014,6 +1022,7 @@ fn advance_cycle(cycles_left: &mut [u8; 32], exe_mask: &mut u32, fin_mask: &mut 
     }
 }
 
+#[cfg(feature = "std")]
 fn gas_sim_fast(instrs: &[crate::recompiler::predecode::PreDecodedInst], _code: &[u8], _bitmask: &[u8]) -> u32 {
     // SoA ROB arrays (32 entries, stack-allocated)
     let mut state = [0u8; 32];        // 0=empty, 1=wait, 2=exe, 3=fin
@@ -1118,6 +1127,7 @@ fn gas_sim_fast(instrs: &[crate::recompiler::predecode::PreDecodedInst], _code: 
     cycles
 }
 
+#[cfg(feature = "std")]
 /// Fast gas cost computation using bitmask-based pipeline simulator.
 pub fn gas_cost_for_block_fast(
     instrs: &[crate::recompiler::predecode::PreDecodedInst],
@@ -1131,7 +1141,7 @@ pub fn gas_cost_for_block_fast(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recompiler::gas_sim::GasSimulator;
+    use crate::gas_sim::GasSimulator;
 
     /// Helper: compute gas cost for a single-block program using GasSimulator.
     fn block_cost(code: &[u8], bitmask: &[u8]) -> u32 {
