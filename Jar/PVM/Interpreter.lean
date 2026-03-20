@@ -360,7 +360,7 @@ def runProgram [JamConfig] (prog : ProgramBlob) (pc : Nat) (regs : Registers)
     (mem : Memory) (gas : Int64) : InvocationResult :=
   match JamConfig.gasModel with
   | .perInstruction => run prog pc regs mem gas
-  | .basicBlock => runBlockGas prog pc regs mem gas
+  | .basicBlockFull => runBlockGas prog pc regs mem gas
   | .basicBlockSinglePass => runBlockGasSinglePass prog pc regs mem gas
 
 -- ============================================================================

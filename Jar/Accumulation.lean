@@ -1468,7 +1468,7 @@ def accone (ps : PartialState) (serviceId : ServiceId)
         -- Run PVM with host-call dispatch via handleHostCall
         let runFn := match JamConfig.gasModel with
           | .perInstruction => PVM.run
-          | .basicBlock => PVM.runBlockGas
+          | .basicBlockFull => PVM.runBlockGas
           | .basicBlockSinglePass => PVM.runBlockGasSinglePass
         let (result, ctx') := PVM.runWithHostCalls AccContext
           prog 5 regs mem (Int64.ofUInt64 totalGas)

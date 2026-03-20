@@ -101,7 +101,7 @@ inductive GasModel where
   /-- GP v0.7.2: 1 gas per instruction. -/
   | perInstruction
   /-- Per-basic-block cost via full pipeline simulation (ROB + EU contention). -/
-  | basicBlock
+  | basicBlockFull
   /-- Per-basic-block cost via single-pass O(n) model (register-done tracking). -/
   | basicBlockSinglePass
   deriving BEq, Inhabited
