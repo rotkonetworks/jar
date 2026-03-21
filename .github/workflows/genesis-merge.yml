@@ -23,7 +23,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BASE=$(gh pr view ${{ github.event.issue.number }} --json baseRefName --jq '.baseRefName')
+          BASE=$(gh pr view ${{ github.event.issue.number }} --repo ${{ github.repository }} --json baseRefName --jq '.baseRefName')
           if [ "$BASE" != "master" ]; then
             echo "Not targeting master — skipping"
             exit 0
