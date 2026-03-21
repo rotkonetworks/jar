@@ -44,52 +44,56 @@ jobs:
       - name: Build genesis tools
         run: lake build genesis_check_merge
 
-      - name: Parse review and check merge readiness
+      - name: Collect all reviews and check merge readiness
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
         run: |
           PR_NUMBER=${{ github.event.issue.number }}
           CACHE=$(cat .github/cache/genesis.json)
 
-          # Parse the /genesis-review comment
-          # Extract rankings and verdict from the structured comment
-          DIFFICULTY=$(echo "$COMMENT_BODY" | grep -i '^difficulty:' | sed 's/^difficulty:\s*//' | tr -d ' ')
-          NOVELTY=$(echo "$COMMENT_BODY" | grep -i '^novelty:' | sed 's/^novelty:\s*//' | tr -d ' ')
-          DESIGN=$(echo "$COMMENT_BODY" | grep -i '^design:' | sed 's/^design:\s*//' | tr -d ' ')
-          VERDICT=$(echo "$COMMENT_BODY" | grep -i '^verdict:' | sed 's/^verdict:\s*//' | tr -d ' ')
+          to_json_array() { echo "$1" | tr ',' '\n' | jq -R . | jq -s .; }
 
-          if [ -z "$DIFFICULTY" ] || [ -z "$NOVELTY" ] || [ -z "$DESIGN" ] || [ -z "$VERDICT" ]; then
-            gh pr comment "$PR_NUMBER" --body "**JAR Bot:** Could not parse review from @${COMMENT_AUTHOR}. Please check the format."
+          parse_review() {
+            local BODY="$1"
+            local AUTHOR="$2"
+            local DIFF=$(echo "$BODY" | grep -i '^difficulty:' | sed 's/^difficulty:\s*//' | tr -d ' ')
+            local NOV=$(echo "$BODY" | grep -i '^novelty:' | sed 's/^novelty:\s*//' | tr -d ' ')
+            local DES=$(echo "$BODY" | grep -i '^design:' | sed 's/^design:\s*//' | tr -d ' ')
+            local VERD=$(echo "$BODY" | grep -i '^verdict:' | sed 's/^verdict:\s*//' | tr -d ' ')
+            if [ -n "$DIFF" ] && [ -n "$NOV" ] && [ -n "$DES" ] && [ -n "$VERD" ]; then
+              jq -n \
+                --arg reviewer "$AUTHOR" \
+                --argjson diff "$(to_json_array "$DIFF")" \
+                --argjson nov "$(to_json_array "$NOV")" \
+                --argjson des "$(to_json_array "$DES")" \
+                --arg verdict "$VERD" \
+                '{reviewer: $reviewer, difficultyRanking: $diff, noveltyRanking: $nov, designQualityRanking: $des, verdict: $verdict}'
+            fi
+          }
+
+          # Scan ALL /genesis-review comments on this PR (last review per author wins)
+          REVIEWS="[]"
+          while IFS= read -r comment; do
+            [ -z "$comment" ] && continue
+            BODY=$(echo "$comment" | jq -r '.body')
+            REVIEWER=$(echo "$comment" | jq -r '.author.login')
+            REVIEW=$(parse_review "$BODY" "$REVIEWER")
+            if [ -n "$REVIEW" ]; then
+              REVIEWS=$(echo "$REVIEWS" | jq --arg r "$REVIEWER" --argjson rev "$REVIEW" \
+                '[.[] | select(.reviewer != $r)] + [$rev]')
+            fi
+          done <<< "$(gh pr view "$PR_NUMBER" --json comments --jq '.comments[] | select(.body | startswith("/genesis-review"))')"
+
+          REVIEW_COUNT=$(echo "$REVIEWS" | jq 'length')
+          if [ "$REVIEW_COUNT" -eq 0 ]; then
+            gh pr comment "$PR_NUMBER" --body "**JAR Bot:** Could not parse any reviews. Please check the format."
             exit 0
           fi
 
-          # Convert comma-separated to JSON arrays
-          to_json_array() {
-            echo "$1" | tr ',' '\n' | jq -R . | jq -s .
-          }
-
-          DIFF_JSON=$(to_json_array "$DIFFICULTY")
-          NOV_JSON=$(to_json_array "$NOVELTY")
-          DES_JSON=$(to_json_array "$DESIGN")
-
-          # Build review JSON
-          REVIEW=$(jq -n \
-            --arg reviewer "$COMMENT_AUTHOR" \
-            --argjson diff "$DIFF_JSON" \
-            --argjson nov "$NOV_JSON" \
-            --argjson des "$DES_JSON" \
-            --arg verdict "$VERDICT" \
-            '{reviewer: $reviewer, difficultyRanking: $diff, noveltyRanking: $nov, designQualityRanking: $des, verdict: $verdict}')
-
-          # Collect all reviews from PR comments (simplified: just this one for now)
-          # In production, would scan all PR comments for /genesis-review
-          REVIEWS_JSON="[$REVIEW]"
-
           # Check merge readiness
           INPUT=$(jq -n \
-            --argjson reviews "$REVIEWS_JSON" \
+            --argjson reviews "$REVIEWS" \
             --argjson indices "$CACHE" \
             '{reviews: $reviews, metaReviews: [], indices: $indices}')
 
@@ -101,7 +105,7 @@ jobs:
 
           if [ "$READY" = "true" ]; then
             gh pr comment "$PR_NUMBER" --body \
-              "**JAR Bot:** Review recorded from @${COMMENT_AUTHOR}.
+              "**JAR Bot:** Review recorded from @${COMMENT_AUTHOR} (${REVIEW_COUNT} total reviews).
               Merge weight: ${MERGE_W}/${TOTAL_W}. Quorum reached — merging."
 
             # Trigger the merge workflow
@@ -109,6 +113,6 @@ jobs:
               -f pr_number="$PR_NUMBER"
           else
             gh pr comment "$PR_NUMBER" --body \
-              "**JAR Bot:** Review recorded from @${COMMENT_AUTHOR}.
+              "**JAR Bot:** Review recorded from @${COMMENT_AUTHOR} (${REVIEW_COUNT} total reviews).
               Merge weight: ${MERGE_W}/${TOTAL_W} (need >50%)."
           fi
