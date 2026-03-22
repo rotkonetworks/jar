@@ -18,16 +18,13 @@ open Genesis.Cli
 def main : IO UInt32 := runJsonPipe fun j => do
   let signedCommits ← IO.ofExcept (j.getObjValAs? (List SignedCommit) "signedCommits")
   let indices ← IO.ofExcept (j.getObjValAs? (List CommitIndex) "indices")
-  -- Build per-commit weight functions by reconstructing state incrementally
-  let (weightFns, _) := signedCommits.zip indices |>.foldl
-    (fun (fns, pastIndices) (commit, idx) =>
+  -- Build per-commit contexts (variant + weight function)
+  let (contexts, _) := signedCommits.zip indices |>.foldl
+    (fun (ctxs, pastIndices) (commit, idx) =>
       let state := reconstructState pastIndices
-      letI := activeVariant commit.prCreatedAt
-      let fn := (state.reviewerWeight ·)
-      (fns ++ [fn], pastIndices ++ [idx])
-    ) (([] : List (ContributorId → Nat)), ([] : List CommitIndex))
-  -- designWeight is the same across v1/v2; if it ever diverges,
-  -- computeRanking would need per-commit variant dispatch for aggregateReviewRanking
-  letI := GenesisVariant.v1
-  let ranking := computeRanking signedCommits weightFns
+      let v := activeVariant commit.prCreatedAt
+      let ctx : RankingCommitCtx := { variant := v, getWeight := state.reviewerWeight }
+      (ctxs ++ [ctx], pastIndices ++ [idx])
+    ) (([] : List RankingCommitCtx), ([] : List CommitIndex))
+  let ranking := computeRanking signedCommits contexts
   return Json.mkObj [("ranking", toJson ranking)]
