@@ -51,7 +51,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_AUTHOR=$(gh pr view ${{ steps.pr-info.outputs.pr_number }} --json author --jq '.author.login')
-          CHANGED=$(gh pr diff ${{ steps.pr-info.outputs.pr_number }} --name-only)
+          CHANGED=$(gh api repos/${{ github.repository }}/pulls/${{ steps.pr-info.outputs.pr_number }}/files --paginate --jq '.[].filename')
           if echo "$CHANGED" | grep -qE '^\.github/workflows/genesis-'; then
             if [ "$PR_AUTHOR" != "sorpaas" ]; then
               gh pr comment ${{ steps.pr-info.outputs.pr_number }} --body \
