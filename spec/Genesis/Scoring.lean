@@ -273,17 +273,20 @@ def computeNetWins (commits : List CommitId)
     ) 0
     (c, (beaten : Int) - (lostTo : Int))
 
-/-- Compute global ranking from signed commits with per-commit weight functions.
-    For each commit, selects the 1/3 quantile reviewer (Sybil-resistant) and
-    uses only their pairwise evidence. Returns commit hashes best to worst. -/
-def computeRanking [GenesisVariant]
+/-- Per-commit context for ranking computation: variant + weight function. -/
+structure RankingCommitCtx where
+  variant : GenesisVariant
+  getWeight : ContributorId → Nat
+
+def computeRanking
     (signedCommits : List SignedCommit)
-    (weightFns : List (ContributorId → Nat)) : List CommitId :=
+    (contexts : List RankingCommitCtx) : List CommitId :=
   let allCommitIds := signedCommits.map (·.id)
   -- Accumulate pairwise evidence using quantile-selected reviewer per commit
-  let pairwiseWins := signedCommits.zip weightFns |>.foldl
-    (fun acc (commit, getWeight) =>
-      match selectQuantileReviewer commit.reviews getWeight commit.id with
+  let pairwiseWins := signedCommits.zip contexts |>.foldl
+    (fun acc (commit, ctx) =>
+      letI := ctx.variant
+      match selectQuantileReviewer commit.reviews ctx.getWeight commit.id with
       | some review => accumulatePairwiseFromReview review acc
       | none => acc  -- no weighted reviewers
     ) ([] : List (CommitId × List CommitId))
