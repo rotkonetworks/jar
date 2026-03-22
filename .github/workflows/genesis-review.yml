@@ -21,7 +21,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_AUTHOR=$(gh pr view ${{ github.event.issue.number }} --json author --jq '.author.login')
-          CHANGED=$(gh pr diff ${{ github.event.issue.number }} --name-only)
+          CHANGED=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}/files --paginate --jq '.[].filename')
           if echo "$CHANGED" | grep -qE '^\.github/workflows/genesis-'; then
             if [ "$PR_AUTHOR" != "sorpaas" ]; then
               echo "Protected files modified by non-founder — skipping genesis review"
