@@ -1,0 +1,13 @@
+{
+  "reviews": [
+    {
+      "reviewer": "sorpaas",
+      "difficultyRanking": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+      "noveltyRanking": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+      "designQualityRanking": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+      "verdict": "notMerge"
+    }
+  ],
+  "metaReviews": [],
+  "indices": []
+}

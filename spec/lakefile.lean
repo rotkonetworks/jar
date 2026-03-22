@@ -193,3 +193,6 @@ lean_exe genesis_validate where
 
 lean_exe genesis_ranking where
   root := `Genesis.Cli.Ranking
+
+lean_exe genesistest where
+  root := `Genesis.Test.GenesisJsonMain

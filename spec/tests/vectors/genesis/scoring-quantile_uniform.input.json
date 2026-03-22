@@ -1,0 +1,4 @@
+{
+  "function": "weightedQuantile",
+  "entries": [[100, 30], [100, 60], [100, 90]]
+}
