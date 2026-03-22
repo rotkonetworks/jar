@@ -6,7 +6,7 @@ REMOTE   := origin
 TEST_BINS := cryptotest safrolejsontest historyjsontest statisticsjsontest \
              authorizationsjsontest disputesjsontest preimagesjsontest \
              assurancesjsontest reportsjsontest accumulatejsontest propertytest \
-             trietest shuffletest codectest blocktest erasuretest
+             trietest shuffletest codectest blocktest erasuretest genesistest
 
 .PHONY: book deploy clean test
 

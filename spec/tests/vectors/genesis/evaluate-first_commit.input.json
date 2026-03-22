@@ -1,0 +1,22 @@
+{
+  "commit": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prId": 1,
+    "author": "alice",
+    "mergeEpoch": 1000000,
+    "prCreatedAt": 999999,
+    "comparisonTargets": [],
+    "reviews": [
+      {
+        "reviewer": "sorpaas",
+        "difficultyRanking": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "noveltyRanking": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "designQualityRanking": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "verdict": "merge"
+      }
+    ],
+    "metaReviews": [],
+    "founderOverride": false
+  },
+  "pastIndices": []
+}
