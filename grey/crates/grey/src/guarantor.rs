@@ -10,6 +10,8 @@
 
 use grey_codec::Encode;
 use grey_consensus::genesis::ValidatorSecrets;
+use grey_commitment::field::BinaryElem32;
+use grey_commitment::reed_solomon::reed_solomon;
 use grey_erasure::ErasureParams;
 use grey_state::refine::{self, RefineContext};
 use grey_store::Store;
@@ -29,6 +31,9 @@ pub struct GuarantorState {
     pub available_cores: BTreeMap<u16, Hash>,
     /// Chunks we've received from peers. Maps report_hash → set of chunk indices.
     pub received_chunks: BTreeMap<Hash, HashSet<u16>>,
+    /// Tensor-encoded DA blocks for on-demand proof generation.
+    /// The DA encoding IS the polynomial commitment witness (accidental computer).
+    pub encoded_blocks: BTreeMap<Hash, grey_commitment::da::EncodedBlock<BinaryElem32>>,
 }
 
 impl GuarantorState {
@@ -37,6 +42,7 @@ impl GuarantorState {
             pending_guarantees: Vec::new(),
             available_cores: BTreeMap::new(),
             received_chunks: BTreeMap::new(),
+            encoded_blocks: BTreeMap::new(),
         }
     }
 
@@ -135,13 +141,16 @@ pub fn process_work_package(
     let chunks = grey_erasure::encode(&erasure_params, &bundle)
         .map_err(|e| format!("erasure encoding failed: {}", e))?;
 
-    // 3. Compute erasure root from chunks and update the report
-    let erasure_root = compute_erasure_root(&chunks);
+    // 3. Tensor-encode for DA commitment (accidental computer).
+    //    The 2D encoding provides both the erasure root and a polynomial
+    //    commitment witness reusable for on-demand Ligerito proofs.
+    let (erasure_root, encoded_block) = tensor_encode_bundle(&bundle);
     report.package_spec.erasure_root = erasure_root;
 
-    // 4. Store all chunks locally
+    // 4. Store chunks + tensor-encoded block
     let encoded_report = report.encode();
     let report_hash = grey_crypto::blake2b_256(&encoded_report);
+    guarantor_state.encoded_blocks.insert(report_hash, encoded_block);
 
     for (i, chunk) in chunks.iter().enumerate() {
         if let Err(e) = store.put_chunk(&report_hash, i as u16, chunk) {
@@ -443,6 +452,51 @@ fn encode_work_package_bundle(package: &WorkPackage) -> Vec<u8> {
 }
 
 /// Compute a Merkle root of erasure-coded chunks.
+/// Tensor-encode a bundle for DA + polynomial commitment.
+/// Returns (erasure_root, encoded_block). The encoded_block IS the polynomial
+/// commitment witness — proof generation reuses it with zero re-encoding cost.
+fn tensor_encode_bundle(bundle: &[u8]) -> (Hash, grey_commitment::da::EncodedBlock<BinaryElem32>) {
+    assert!(!bundle.is_empty(), "cannot tensor-encode empty bundle");
+
+    let num_elems = (bundle.len() + 3) / 4;
+    let padded_size = num_elems.next_power_of_two();
+    let mut poly: Vec<BinaryElem32> = Vec::with_capacity(padded_size);
+    for i in 0..padded_size {
+        let offset = i * 4;
+        let val = if offset + 4 <= bundle.len() {
+            u32::from_le_bytes([bundle[offset], bundle[offset+1], bundle[offset+2], bundle[offset+3]])
+        } else if offset < bundle.len() {
+            let mut bytes = [0u8; 4];
+            bytes[..bundle.len() - offset].copy_from_slice(&bundle[offset..]);
+            u32::from_le_bytes(bytes)
+        } else {
+            0
+        };
+        poly.push(BinaryElem32::from(val));
+    }
+
+    let log_size = padded_size.trailing_zeros() as usize;
+    let log_m = log_size / 2 + log_size % 2;
+    let log_n = log_size - log_m;
+    let m = 1 << log_m;
+    let n = 1 << log_n;
+
+    let rs = reed_solomon::<BinaryElem32>(m, m * 4);
+    let block = grey_commitment::da::encode(&poly, m, n, &rs);
+
+    let root = match block.row_root().root {
+        Some(root_bytes) => {
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&root_bytes);
+            Hash(h)
+        }
+        None => Hash::ZERO,
+    };
+
+    (root, block)
+}
+
+#[allow(dead_code)]
 fn compute_erasure_root(chunks: &[Vec<u8>]) -> Hash {
     if chunks.is_empty() {
         return Hash::ZERO;

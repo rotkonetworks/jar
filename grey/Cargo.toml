@@ -16,6 +16,7 @@ members = [
     "crates/grey-store",
     "crates/grey-rpc",
     "crates/grey-bench",
+    "crates/grey-commitment",
 ]
 exclude = [
     "services/sample-service",
@@ -45,6 +46,7 @@ grey-network = { path = "crates/grey-network" }
 grey-transpiler = { path = "crates/grey-transpiler" }
 grey-store = { path = "crates/grey-store" }
 grey-rpc = { path = "crates/grey-rpc" }
+grey-commitment = { path = "crates/grey-commitment" }
 
 # External dependencies
 blake2 = "0.10"
