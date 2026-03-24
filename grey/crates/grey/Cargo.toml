@@ -16,7 +16,7 @@ grey-crypto = { workspace = true }
 javm = { workspace = true }
 grey-merkle = { workspace = true }
 grey-erasure = { workspace = true }
-grey-commitment = { workspace = true }
+grey-da-commit = { workspace = true }
 grey-state = { workspace = true }
 grey-consensus = { workspace = true }
 grey-services = { workspace = true }

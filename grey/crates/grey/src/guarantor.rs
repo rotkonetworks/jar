@@ -10,8 +10,8 @@
 
 use grey_codec::Encode;
 use grey_consensus::genesis::ValidatorSecrets;
-use grey_commitment::field::BinaryElem32;
-use grey_commitment::reed_solomon::reed_solomon;
+use grey_da_commit::field::BinaryElem32;
+use grey_da_commit::reed_solomon::reed_solomon;
 use grey_erasure::ErasureParams;
 use grey_state::refine::{self, RefineContext};
 use grey_store::Store;
@@ -33,7 +33,7 @@ pub struct GuarantorState {
     pub received_chunks: BTreeMap<Hash, HashSet<u16>>,
     /// Tensor-encoded DA blocks for on-demand proof generation.
     /// The DA encoding IS the polynomial commitment witness (accidental computer).
-    pub encoded_blocks: BTreeMap<Hash, grey_commitment::da::EncodedBlock<BinaryElem32>>,
+    pub encoded_blocks: BTreeMap<Hash, grey_da_commit::da::EncodedBlock<BinaryElem32>>,
 }
 
 impl GuarantorState {
@@ -455,7 +455,7 @@ fn encode_work_package_bundle(package: &WorkPackage) -> Vec<u8> {
 /// Tensor-encode a bundle for DA + polynomial commitment.
 /// Returns (erasure_root, encoded_block). The encoded_block IS the polynomial
 /// commitment witness — proof generation reuses it with zero re-encoding cost.
-fn tensor_encode_bundle(bundle: &[u8]) -> (Hash, grey_commitment::da::EncodedBlock<BinaryElem32>) {
+fn tensor_encode_bundle(bundle: &[u8]) -> (Hash, grey_da_commit::da::EncodedBlock<BinaryElem32>) {
     assert!(!bundle.is_empty(), "cannot tensor-encode empty bundle");
 
     let num_elems = (bundle.len() + 3) / 4;
@@ -482,7 +482,7 @@ fn tensor_encode_bundle(bundle: &[u8]) -> (Hash, grey_commitment::da::EncodedBlo
     let n = 1 << log_n;
 
     let rs = reed_solomon::<BinaryElem32>(m, m * 4);
-    let block = grey_commitment::da::encode(&poly, m, n, &rs);
+    let block = grey_da_commit::da::encode(&poly, m, n, &rs);
 
     let root = match block.row_root().root {
         Some(root_bytes) => {

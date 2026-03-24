@@ -17,6 +17,7 @@ members = [
     "crates/grey-rpc",
     "crates/grey-bench",
     "crates/grey-commitment",
+    "crates/grey-da-commit",
 ]
 exclude = [
     "services/sample-service",
@@ -47,6 +48,7 @@ grey-transpiler = { path = "crates/grey-transpiler" }
 grey-store = { path = "crates/grey-store" }
 grey-rpc = { path = "crates/grey-rpc" }
 grey-commitment = { path = "crates/grey-commitment" }
+grey-da-commit = { path = "crates/grey-da-commit" }
 
 # External dependencies
 blake2 = "0.10"
